@@ -75,17 +75,20 @@
   FlywayAutoConfiguration 자체가 클래스패스에 없어서 조용히 미실행되고, Hibernate `ddl-auto: validate`가 빈 스키마를 보고 실패).
   `build.gradle`에 `implementation 'org.springframework.boot:spring-boot-flyway'` 추가로 해결.
 - `./gradlew test` (`GokchuApplicationTests`, `YoutubeLinkParserTest`) 전체 통과 확인. Flyway 마이그레이션도 정상 적용됨(7개 테이블 생성 확인).
-- YouTube Data API 키: 여전히 미발급 (다음 세션 착수 필요)
+- YouTube Data API 키: **발급 완료**. Google Cloud 프로젝트 `gokchu` 생성 → YouTube Data API v3 사용 설정 →
+  API 키 생성(`gokchu-youtube-key`, API 제한사항을 YouTube Data API v3로 제한). `videos.list` 실제 호출로 스모크 테스트 통과
+  (`dQw4w9WgXcQ` 조회 성공). 애플리케이션 제한사항(IP 등)은 배포 시점에 서버 IP로 추가 예정, 현재는 "없음".
+  키 발급 과정에서 이 Google 계정의 2단계 인증이 꺼져 있어 Cloud Console 접근이 막혔었고, 사용자가 직접 켠 뒤 진행함.
 - Redis 로컬 실행 방식: 여전히 미정
 
 ### 로컬 실행 시 주의사항 (신규)
 - 이 머신은 포트 5432에 네이티브 PostgreSQL 17 서비스가 떠 있음. Docker Postgres는 5433 포트를 사용하도록 맞춰놨음.
-- 로컬 실행/테스트 전 `export DB_URL="jdbc:postgresql://localhost:5433/gokchu"` 필요 (또는 IDE 실행 설정에 동일하게 등록)
+- 로컬 실행/테스트 전 `DB_URL`, `YOUTUBE_API_KEY` 환경변수 필요. 리포 루트의 `.env`(gitignore됨)에 넣어뒀음:
+  `export $(grep -v '^#' .env | xargs)` 로 셸에 로드하거나 IDE 실행 설정에 동일하게 등록.
 
 ### 다음 세션 시작 시 순서
-1. YouTube Data API 키 발급 안내(Google Cloud Console) 및 로컬 환경변수(`YOUTUBE_API_KEY`) 설정
-2. 키 발급 후 `videos.list` 실제 호출 스모크 테스트
-3. 이후 2주차(검색 연동 + Redis 캐싱) 착수 — Redis 로컬 실행 방식부터 결정
+1. 2주차(YouTube 검색 연동 + Redis 캐싱) 착수 — Redis 로컬 실행 방식부터 결정(docker-compose 추가 vs 별도 설치)
+2. 검색 캐시(CachedVideo) 우선 조회 → 미스 시 search.list 흐름 구현
 
 ## 진행 상황 (2026-09-11 기준)
 
