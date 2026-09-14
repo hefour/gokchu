@@ -86,9 +86,59 @@
 - 로컬 실행/테스트 전 `DB_URL`, `YOUTUBE_API_KEY` 환경변수 필요. 리포 루트의 `.env`(gitignore됨)에 넣어뒀음:
   `export $(grep -v '^#' .env | xargs)` 로 셸에 로드하거나 IDE 실행 설정에 동일하게 등록.
 
+### 이번 세션 추가 (2026-09-14, 후속) — 재생 흐름(큐 상태 전환) 구현
+- 로드맵 순서를 바꿔서 검색(2주차, YouTube search.list는 하루 최대 100회 쿼터라 캐시 없이도 급하지 않음)보다
+  재생 흐름(원래 3주차 일부)을 먼저 구현하기로 결정. WebSocket은 나중으로 미루고 우선 REST 폴링 기반으로 구현.
+- `QueueItem`에 `play()`/`finish()` 추가(`skip()`은 기존에 이미 있었음, 미사용 상태였음).
+- `QueueService`: 큐 등록 시 매장에 재생중인 곡이 없으면 즉시 `PLAYING`으로 등록(자동 시작).
+  `completeCurrent`(곡 종료 통보 → 다음 대기곡 승격), `skip`(스킵 → 재생중이었으면 다음 곡 승격) 추가.
+  한 매장에 `PLAYING`은 최대 1개라는 불변식을 서비스 계층에서 보장.
+- `QueueController`: `GET /now-playing`, `POST /queue-items/{id}/complete`, `POST /queue-items/{id}/skip` 추가.
+  베이스 경로를 `/api/tables/{tableToken}`으로 올리고 기존 두 엔드포인트는 `/queue-items` 하위로 이동(URL은 동일).
+- `ErrorCode`에 `QUEUE_ITEM_NOT_FOUND`(404), `QUEUE_ITEM_NOT_PLAYING`(409), `QUEUE_ITEM_ALREADY_FINISHED`(409) 추가.
+- `QueueServiceTest` 신규 작성(13케이스, Mockito). 전체 테스트 24개 통과.
+- 실제 서버 띄워서 등록→자동재생→종료→다음곡 승격→스킵→큐 소진까지 curl로 엔드투엔드 검증 완료.
+- `docs/API.md`에 신규 엔드포인트 3개 반영.
+
+### 이번 세션 추가 (2026-09-14, 후속2) — 폴백 재생목록 구현
+- 요구사항: 신청곡이 없으면(오픈 직후/큐 소진) 매장이 미리 등록한 폴백 재생목록에서 셔플로 재생.
+  신청곡이 들어와도 **현재 재생중인 곡(폴백이든 신청곡이든)이 끝날 때까지는 끊지 않음**.
+  신청곡이 다 끝나면 다시 폴백으로 복귀. (단골손님 개인 플레이리스트는 "추후" — 이번엔 구현 안 함,
+  폴백 재생목록과 억지로 같은 추상화로 묶지 않음 — YAGNI)
+- `V2__fallback_playlist.sql`: `fallback_tracks` 테이블 신설 + `stores`에 `current_fallback_video_id`/
+  `title`/`thumbnail_url` 컬럼 추가. **신청곡과 달리 폴백 트랙은 `queue_items`에 행을 만들지 않고,
+  "지금 재생중인 폴백"은 매장에 붙은 이 상태값 하나로만 추적**(그래야 `now-playing`을 반복 폴링해도
+  같은 곡이 유지됨).
+- `com.gokchu.gokchu.fallback` 패키지 신설: `FallbackTrack`, `FallbackTrackRepository`,
+  `FallbackTrackService`(+Controller, DTO) — 큐 등록과 동일하게 `VideoValidationService`로
+  embeddable/region 검증 후 저장. `POST/GET /api/tables/{tableToken}/fallback-tracks`.
+- `Store`에 `hasFallbackPlaying()`/`startFallback(track)`/`clearFallback()` 추가.
+- `QueueService` 재설계:
+  - `getNowPlaying`: PLAYING 신청곡 > 이미 재생중인 폴백(있으면 그대로 유지, idempotent) > 폴백
+    새로 시작 > (폴백 트랙도 없으면) 빈값. **이제 `@Transactional`**(폴백을 lazy하게 시작시킬 수 있어서 readOnly 아님).
+  - `completeCurrent(tableToken, id)` → **`completeNowPlaying(tableToken)`로 시그니처 변경, id 안 받음**.
+    서버가 "지금 뭐가 재생중인지" 자체를 알고 있으므로 TV는 "끝났다"고만 통보. 신청곡 종료 → 대기곡
+    있으면 승격, 없으면 폴백 시작(직전에 끝난 게 폴백이었다면 그 곡은 후보에서 제외해 연속재생 방지).
+  - `skip`은 그대로 id 기반 유지(특정 신청곡을 지목해서 스킵하는 거라 폴백과 성격이 다름), 내부적으로
+    큐 소진 시 폴백 시작 로직 재사용.
+  - 응답 타입을 `QueueItemResponse`에서 **`NowPlayingResponse`**(`source: QUEUE|FALLBACK`,
+    `queueItemId`는 FALLBACK일 때 null)로 통일.
+- 컨트롤러: `POST /queue-items/{id}/complete` **제거**, `POST /now-playing/complete`(id 없음)로 대체.
+  `GET /now-playing` 응답 타입도 `NowPlayingResponse`로 변경.
+- `DevDataInitializer`에 데모 매장용 폴백 트랙 2개 시드 추가(신규 스토어 생성 시에만).
+- 테스트: `QueueServiceTest` 전면 재작성(폴백 시나리오 포함 18케이스), `FallbackTrackServiceTest` 신규(3케이스).
+  전체 33개 테스트 통과.
+- 실제 서버로 전체 흐름 curl 검증: 폴백 자동시작 → 폴링 idempotent 확인 → 폴백 재생중 신청곡 등록해도
+  안 끊김 확인 → 폴백 종료 통보 → 신청곡으로 전환 → 신청곡 종료 통보 → 다른 폴백 트랙으로 복귀. 전부 의도대로 동작.
+- `docs/API.md`에 재생/폴백 섹션 전면 갱신.
+
 ### 다음 세션 시작 시 순서
-1. 2주차(YouTube 검색 연동 + Redis 캐싱) 착수 — Redis 로컬 실행 방식부터 결정(docker-compose 추가 vs 별도 설치)
-2. 검색 캐시(CachedVideo) 우선 조회 → 미스 시 search.list 흐름 구현
+1. 프론트엔드(React+Vite) 착수 — 손님용(링크 신청 + 큐 조회)과 TV용(now-playing 폴링 + IFrame Player +
+   ENDED 시 `now-playing/complete` 호출) 화면 우선. 검색 UI, 관리자 화면(폴백 트랙 관리 포함)은
+   백엔드 보호가 없는 상태라 스켈레톤만 두거나 최소 폼으로.
+2. 이후 2주차(YouTube 검색 연동, DB 기반 캐시) — Redis는 4주차 신청 제한 카운터 시점까지 보류.
+3. 단골손님 개인 플레이리스트는 스키마조차 아직 안 정함 — 실제로 붙일 때 폴백 재생목록과 관계를
+   어떻게 가져갈지(완전 별개 테이블 vs 공통 "재생목록" 개념) 다시 논의 필요.
 
 ## 진행 상황 (2026-09-11 기준)
 

@@ -66,6 +66,14 @@ public class QueueItem {
         this.status = QueueItemStatus.WAITING;
     }
 
+    public void play() {
+        this.status = QueueItemStatus.PLAYING;
+    }
+
+    public void finish() {
+        this.status = QueueItemStatus.DONE;
+    }
+
     public void skip() {
         this.status = QueueItemStatus.SKIPPED;
     }

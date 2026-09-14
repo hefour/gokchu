@@ -1,10 +1,12 @@
 package com.gokchu.gokchu.queue;
 
 import com.gokchu.gokchu.queue.dto.AddQueueItemRequest;
+import com.gokchu.gokchu.queue.dto.NowPlayingResponse;
 import com.gokchu.gokchu.queue.dto.QueueItemResponse;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -17,20 +19,42 @@ import java.util.List;
 import java.util.UUID;
 
 @RestController
-@RequestMapping("/api/tables/{tableToken}/queue-items")
+@RequestMapping("/api/tables/{tableToken}")
 @RequiredArgsConstructor
 public class QueueController {
 
     private final QueueService queueService;
 
-    @PostMapping
+    @PostMapping("/queue-items")
     @ResponseStatus(HttpStatus.CREATED)
     public QueueItemResponse addToQueue(@PathVariable UUID tableToken, @Valid @RequestBody AddQueueItemRequest request) {
         return queueService.addToQueue(tableToken, request);
     }
 
-    @GetMapping
+    @GetMapping("/queue-items")
     public List<QueueItemResponse> getQueue(@PathVariable UUID tableToken) {
         return queueService.getQueue(tableToken);
+    }
+
+    @GetMapping("/now-playing")
+    public ResponseEntity<NowPlayingResponse> getNowPlaying(@PathVariable UUID tableToken) {
+        return queueService.getNowPlaying(tableToken)
+                .map(ResponseEntity::ok)
+                .orElseGet(() -> ResponseEntity.noContent().build());
+    }
+
+    @PostMapping("/now-playing/complete")
+    public ResponseEntity<NowPlayingResponse> completeNowPlaying(@PathVariable UUID tableToken) {
+        return queueService.completeNowPlaying(tableToken)
+                .map(ResponseEntity::ok)
+                .orElseGet(() -> ResponseEntity.noContent().build());
+    }
+
+    @PostMapping("/queue-items/{queueItemId}/skip")
+    public ResponseEntity<NowPlayingResponse> skip(
+            @PathVariable UUID tableToken, @PathVariable Long queueItemId) {
+        return queueService.skip(tableToken, queueItemId)
+                .map(ResponseEntity::ok)
+                .orElseGet(() -> ResponseEntity.noContent().build());
     }
 }
