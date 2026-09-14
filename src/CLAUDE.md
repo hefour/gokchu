@@ -62,6 +62,55 @@
 - 개인 식별 기반 제한(로그인, 기기 지문 등) — 이 프로젝트 스코프 아님, 테이블 토큰으로 충분
 - `relatedToVideoId` 기반 추천 API 사용 — 이미 폐지된 기능
 
+## 진행 상황 (2026-09-14 기준)
+
+### 이번 세션 (2026-09-14) — 1주차 검증 완료
+- Docker Desktop 기동 → `docker-compose down -v && up -d`로 Postgres 볼륨 재생성 (지난 세션의 비밀번호 불일치 해결)
+- **신규 발견**: 이 머신에 네이티브 `postgresql-x64-17` Windows 서비스가 이미 포트 5432를 점유하고 있어서,
+  Docker 컨테이너로 포트가 매핑돼도 앱이 실제로는 네이티브 Postgres에 연결되고 있었음(그 안엔 빈 DB라 스키마 에러 발생 경로가 헷갈리게 나왔음).
+  → `docker-compose.yml` 포트를 `5433:5432`로 변경, 로컬 실행 시 `DB_URL=jdbc:postgresql://localhost:5433/gokchu` 환경변수 필요.
+  네이티브 서비스는 다른 프로젝트가 쓰고 있을 수 있어 중지하지 않음.
+- **버그 발견 및 수정**: Spring Boot 4.1.1부터 Flyway 자동설정이 `spring-boot-autoconfigure`에서 분리되어
+  `org.springframework.boot:spring-boot-flyway` 모듈을 명시적으로 추가해야 동작함(`flyway-core`+`flyway-database-postgresql`만으로는
+  FlywayAutoConfiguration 자체가 클래스패스에 없어서 조용히 미실행되고, Hibernate `ddl-auto: validate`가 빈 스키마를 보고 실패).
+  `build.gradle`에 `implementation 'org.springframework.boot:spring-boot-flyway'` 추가로 해결.
+- `./gradlew test` (`GokchuApplicationTests`, `YoutubeLinkParserTest`) 전체 통과 확인. Flyway 마이그레이션도 정상 적용됨(7개 테이블 생성 확인).
+- YouTube Data API 키: 여전히 미발급 (다음 세션 착수 필요)
+- Redis 로컬 실행 방식: 여전히 미정
+
+### 로컬 실행 시 주의사항 (신규)
+- 이 머신은 포트 5432에 네이티브 PostgreSQL 17 서비스가 떠 있음. Docker Postgres는 5433 포트를 사용하도록 맞춰놨음.
+- 로컬 실행/테스트 전 `export DB_URL="jdbc:postgresql://localhost:5433/gokchu"` 필요 (또는 IDE 실행 설정에 동일하게 등록)
+
+### 다음 세션 시작 시 순서
+1. YouTube Data API 키 발급 안내(Google Cloud Console) 및 로컬 환경변수(`YOUTUBE_API_KEY`) 설정
+2. 키 발급 후 `videos.list` 실제 호출 스모크 테스트
+3. 이후 2주차(검색 연동 + Redis 캐싱) 착수 — Redis 로컬 실행 방식부터 결정
+
+## 진행 상황 (2026-09-11 기준)
+
+### 이번 세션 (2026-09-11) — 1주차 검증 착수, 중단
+- 로컬 Docker 데몬 켜고 `docker-compose up -d`로 Postgres 기동 완료
+- `./gradlew test` 실행 → `GokchuApplicationTests#contextLoads()` 실패
+  - 원인: `gokchu_pgdata` 볼륨이 이전에 이미 초기화되어 있어서, `docker-compose.yml`의
+    `POSTGRES_PASSWORD` 환경변수가 반영되지 않고 볼륨에 저장된 예전 비밀번호로
+    인증 시도 → `password authentication failed for user "gokchu"`
+  - **다음 세션에서 먼저 할 일**: 이 볼륨을 `docker-compose down -v`로 삭제하고
+    재생성할지(데모 데이터는 `DevDataInitializer`가 재기동 시 자동 재생성됨, 안전),
+    아니면 볼륨에 남아있는 기존 비밀번호를 찾아 설정을 맞출지 결정 필요.
+    사용자 의견: 재생성 쪽으로 기울어 있었으나 최종 확정 전 세션 종료.
+- `YoutubeLinkParserTest`는 이 세션에서 재확인 안 함 (지난 세션에 10건 통과 확인됨)
+- YouTube Data API 키: **아직 발급 안 됨**. 다음 세션에서 Google Cloud Console
+  발급 절차 안내부터 시작할 것 (2주차 검색 연동 + 1주차 videos.list 실제 호출 테스트에 필요)
+- Redis 로컬 실행 방식: 아직 결정 보류 유지 (사용자가 나중에 정하겠다고 확인)
+
+### 다음 세션 시작 시 순서
+1. Postgres 볼륨 인증 문제 해결 (위 내용 참고, 재생성이 유력)
+2. `./gradlew test`로 `GokchuApplicationTests` 통과 확인 (1주차 최종 검증 마무리)
+3. YouTube Data API 키 발급 안내 및 로컬 환경변수(`YOUTUBE_API_KEY`) 설정
+4. 키 발급 후 `videos.list` 실제 호출 스모크 테스트
+5. 이후 2주차(검색 연동 + Redis 캐싱) 착수
+
 ## 진행 상황 (2026-08-30 기준)
 
 ### 1주차 — 완료

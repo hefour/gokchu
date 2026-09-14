@@ -6,7 +6,7 @@ services:
       POSTGRES_USER: gokchu
       POSTGRES_PASSWORD: gokchu
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - gokchu_pgdata:/var/lib/postgresql/data
 
