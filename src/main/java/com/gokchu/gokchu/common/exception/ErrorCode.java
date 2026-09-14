@@ -11,7 +11,8 @@ public enum ErrorCode {
     YOUTUBE_API_ERROR(HttpStatus.BAD_GATEWAY, "유튜브 API 호출에 실패했습니다."),
     QUEUE_ITEM_NOT_FOUND(HttpStatus.NOT_FOUND, "존재하지 않는 큐 항목입니다."),
     QUEUE_ITEM_NOT_PLAYING(HttpStatus.CONFLICT, "현재 재생 중인 곡이 아닙니다."),
-    QUEUE_ITEM_ALREADY_FINISHED(HttpStatus.CONFLICT, "이미 종료된 큐 항목입니다.");
+    QUEUE_ITEM_ALREADY_FINISHED(HttpStatus.CONFLICT, "이미 종료된 큐 항목입니다."),
+    FALLBACK_TRACK_NOT_FOUND(HttpStatus.NOT_FOUND, "존재하지 않는 폴백 트랙입니다.");
 
     private final HttpStatus status;
     private final String message;

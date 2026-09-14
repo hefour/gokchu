@@ -31,6 +31,7 @@
 | `QUEUE_ITEM_NOT_FOUND` | 404 | 존재하지 않는 큐 항목입니다. (다른 매장 소속인 경우도 동일하게 취급) |
 | `QUEUE_ITEM_NOT_PLAYING` | 409 | 현재 재생 중인 곡이 아닙니다. (`complete`를 재생중이 아닌 곡에 호출) |
 | `QUEUE_ITEM_ALREADY_FINISHED` | 409 | 이미 종료된 큐 항목입니다. (`skip`을 DONE/SKIPPED 곡에 호출) |
+| `FALLBACK_TRACK_NOT_FOUND` | 404 | 존재하지 않는 폴백 트랙입니다. (다른 매장 소속인 경우도 동일하게 취급) |
 
 ---
 
@@ -266,6 +267,24 @@ GET /api/tables/{tableToken}/fallback-tracks
 ```
 
 **Response** `200 OK` — `FallbackTrackResponse` 배열.
+
+---
+
+### 폴백 트랙 삭제
+
+```
+DELETE /api/tables/{tableToken}/fallback-tracks/{fallbackTrackId}
+```
+
+**Response** `204 No Content`. 삭제 대상이 매장에서 지금 재생중인 폴백 트랙이었다면
+매장의 "현재 폴백" 상태도 같이 초기화한다(다음 `now-playing` 호출 때 새로 하나 골라 시작).
+
+**에러**
+
+| 상황 | code |
+|---|---|
+| tableToken이 존재하지 않음 | `TABLE_TOKEN_NOT_FOUND` |
+| fallbackTrackId가 존재하지 않거나 다른 매장 소속 | `FALLBACK_TRACK_NOT_FOUND` |
 
 ---
 

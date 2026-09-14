@@ -105,4 +105,54 @@ class FallbackTrackServiceTest {
         assertThat(responses).hasSize(1);
         assertThat(responses.get(0).videoId()).isEqualTo("v1");
     }
+
+    @Test
+    void deleteTrack_존재하면_삭제된다() {
+        FallbackTrack track = FallbackTrack.builder()
+                .store(store).videoId("v1").title("t1").thumbnailUrl("u1").build();
+        ReflectionTestUtils.setField(track, "id", 1L);
+        when(fallbackTrackRepository.findById(1L)).thenReturn(Optional.of(track));
+
+        fallbackTrackService.deleteTrack(tableToken, 1L);
+
+        org.mockito.Mockito.verify(fallbackTrackRepository).delete(track);
+    }
+
+    @Test
+    void deleteTrack_현재_재생중인_트랙이면_매장의_폴백상태도_초기화한다() {
+        FallbackTrack track = FallbackTrack.builder()
+                .store(store).videoId("v1").title("t1").thumbnailUrl("u1").build();
+        ReflectionTestUtils.setField(track, "id", 1L);
+        store.startFallback(track);
+        when(fallbackTrackRepository.findById(1L)).thenReturn(Optional.of(track));
+
+        fallbackTrackService.deleteTrack(tableToken, 1L);
+
+        assertThat(store.hasFallbackPlaying()).isFalse();
+    }
+
+    @Test
+    void deleteTrack_존재하지_않으면_예외가_발생한다() {
+        when(fallbackTrackRepository.findById(999L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> fallbackTrackService.deleteTrack(tableToken, 999L))
+                .isInstanceOf(GokchuException.class)
+                .extracting(e -> ((GokchuException) e).getErrorCode())
+                .isEqualTo(ErrorCode.FALLBACK_TRACK_NOT_FOUND);
+    }
+
+    @Test
+    void deleteTrack_다른_매장_트랙이면_예외가_발생한다() {
+        Store otherStore = Store.builder().name("다른 매장").regionCode("KR").build();
+        ReflectionTestUtils.setField(otherStore, "id", 2L);
+        FallbackTrack otherStoreTrack = FallbackTrack.builder()
+                .store(otherStore).videoId("v1").title("t1").thumbnailUrl("u1").build();
+        ReflectionTestUtils.setField(otherStoreTrack, "id", 1L);
+        when(fallbackTrackRepository.findById(1L)).thenReturn(Optional.of(otherStoreTrack));
+
+        assertThatThrownBy(() -> fallbackTrackService.deleteTrack(tableToken, 1L))
+                .isInstanceOf(GokchuException.class)
+                .extracting(e -> ((GokchuException) e).getErrorCode())
+                .isEqualTo(ErrorCode.FALLBACK_TRACK_NOT_FOUND);
+    }
 }

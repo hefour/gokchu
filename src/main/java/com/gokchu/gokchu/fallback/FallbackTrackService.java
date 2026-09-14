@@ -4,6 +4,7 @@ import com.gokchu.gokchu.common.exception.ErrorCode;
 import com.gokchu.gokchu.common.exception.GokchuException;
 import com.gokchu.gokchu.fallback.dto.AddFallbackTrackRequest;
 import com.gokchu.gokchu.fallback.dto.FallbackTrackResponse;
+import com.gokchu.gokchu.store.Store;
 import com.gokchu.gokchu.tabletoken.TableToken;
 import com.gokchu.gokchu.tabletoken.TableTokenRepository;
 import com.gokchu.gokchu.video.CachedVideo;
@@ -49,6 +50,25 @@ public class FallbackTrackService {
                 .stream()
                 .map(FallbackTrackResponse::from)
                 .toList();
+    }
+
+    @Transactional
+    public void deleteTrack(UUID tableToken, Long fallbackTrackId) {
+        TableToken table = findTable(tableToken);
+        Store store = table.getStore();
+
+        FallbackTrack track = fallbackTrackRepository.findById(fallbackTrackId)
+                .orElseThrow(() -> new GokchuException(ErrorCode.FALLBACK_TRACK_NOT_FOUND));
+
+        if (!track.getStore().getId().equals(store.getId())) {
+            throw new GokchuException(ErrorCode.FALLBACK_TRACK_NOT_FOUND);
+        }
+
+        if (track.getVideoId().equals(store.getCurrentFallbackVideoId())) {
+            store.clearFallback();
+        }
+
+        fallbackTrackRepository.delete(track);
     }
 
     private TableToken findTable(UUID tableToken) {
