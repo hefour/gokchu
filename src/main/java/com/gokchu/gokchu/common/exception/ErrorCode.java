@@ -14,7 +14,9 @@ public enum ErrorCode {
     QUEUE_ITEM_ALREADY_FINISHED(HttpStatus.CONFLICT, "이미 종료된 큐 항목입니다."),
     FALLBACK_TRACK_NOT_FOUND(HttpStatus.NOT_FOUND, "존재하지 않는 폴백 트랙입니다."),
     INVALID_ADMIN_PASSWORD(HttpStatus.UNAUTHORIZED, "비밀번호가 올바르지 않습니다."),
-    UNAUTHORIZED_ADMIN(HttpStatus.UNAUTHORIZED, "관리자 인증이 필요합니다.");
+    UNAUTHORIZED_ADMIN(HttpStatus.UNAUTHORIZED, "관리자 인증이 필요합니다."),
+    STORE_NOT_FOUND(HttpStatus.NOT_FOUND, "존재하지 않는 매장입니다."),
+    TOO_MANY_LOGIN_ATTEMPTS(HttpStatus.TOO_MANY_REQUESTS, "로그인 시도가 너무 많습니다. 잠시 후 다시 시도해 주세요.");
 
     private final HttpStatus status;
     private final String message;

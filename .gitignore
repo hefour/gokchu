@@ -37,5 +37,9 @@ out/
 .vscode/
 
 ### Env ###
-.env
-.env.local
+.env*
+!.env.example
+
+### Secrets ###
+*.pem
+*.key

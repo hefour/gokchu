@@ -1,0 +1,45 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: gokchu
+      POSTGRES_USER: gokchu
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - gokchu_pgdata:/var/lib/postgresql/data
+
+  backend:
+    build: .
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      DB_URL: jdbc:postgresql://postgres:5432/gokchu
+      DB_USERNAME: gokchu
+      DB_PASSWORD: ${DB_PASSWORD}
+      YOUTUBE_API_KEY: ${YOUTUBE_API_KEY}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      ADMIN_TOKEN_SECRET: ${ADMIN_TOKEN_SECRET}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS}
+    depends_on:
+      - postgres
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - backend
+
+volumes:
+  gokchu_pgdata:
+  caddy_data:
+  caddy_config:

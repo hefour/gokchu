@@ -103,14 +103,52 @@
 - AWS 콘솔 작업(EC2 인스턴스, 보안그룹, Elastic IP, duckdns 연결)은 사용자가 직접 해야 함(자격증명
   없어서 대신 못 함) — 끝나면 퍼블릭 IP/도메인 받아서 SSH로 배포 진행 예정.
 
+### 이번 세션 (2026-09-15, 후속) — 실제 배포 완료 + 발견된 문제들 + 최우선 3종 추가 구현
+
+**배포 완료.** 백엔드 `https://gokchu.duckdns.org`(AWS EC2 t3.micro), 프론트
+`https://gokchu-frontend.vercel.app`. 둘 다 실제로 붙어서 신청곡 등록→재생→관리자 로그인까지
+엔드투엔드 확인됨.
+
+**배포 중 겪은 문제 (다음에 또 배포할 때 참고)**
+- SSH 세션 끊기면 원격 `docker compose up --build`도 같이 죽음 → `nohup ... &`로 세션과 분리해서 돌릴 것
+- t3.micro 루트 디스크가 6.7GB뿐이라 서버에서 Gradle 빌드하면 디스크 꽉 참 → **로컬에서
+  `./gradlew bootJar`로 jar 빌드 → scp로 전송 → 서버 Dockerfile은 그 jar만 COPY하는 단일 스테이지로
+  전환**. 이후 배포는 항상 이 순서(로컬 빌드 → scp → `docker compose up -d --build`).
+- 그래도 디스크 부족 → 2GB 스왑 제거(`swapoff && rm /swapfile`)해서 겨우 공간 확보. **디스크
+  계속 빠듯함, 언젠가 EBS 볼륨 늘려야 함**
+- Vercel에 React Router(BrowserRouter) 배포하면 `/guest` 같은 경로가 404 → `vercel.json`에
+  전체 경로를 `/index.html`로 rewrite하는 규칙 추가해서 해결
+- 사용자가 이동하면서 작업해서 IP가 계속 바뀜 → EC2 보안그룹 SSH(22) 규칙을 "내 IP" 대신
+  0.0.0.0/0으로 열어둠(어차피 `.pem` 키 기반 인증이라 무차별 대입 위험 낮음, 비밀번호 로그인
+  아님)
+- 관리자 비밀번호를 `4820`(4자리)으로 사용자가 직접 선택 → 이번 세션에서 로그인 rate limit
+  추가로 리스크 완화(아래)
+- 랜딩 페이지가 없어서 TV/관리자 URL을 매번 외워야 하는 문제 → `HomePage` 추가,
+  `VITE_DEFAULT_TABLE_TOKEN` 환경변수로 홈에서 버튼 클릭만으로 TV/관리자/손님 화면 이동
+
+**이번에 추가 구현한 것 (우선순위 최상위 3개)**
+1. **매장/테이블 생성 API** — `com.gokchu.gokchu.store` 패키지에 `StoreController`/`StoreService`
+   신설. `POST /api/stores`, `POST /api/stores/{storeId}/tables`, `GET /api/stores/{storeId}/tables`,
+   전부 관리자 인증 필요(`WebConfig` 인터셉터 패턴에 `/api/stores`, `/api/stores/*/tables` 추가).
+   `TableTokenRepository.findByStoreId` 신규. 이제 SQL 직접 안 쳐도 테이블(QR용 토큰) 발급 가능.
+2. **YouTube API 키 IP 제한** — Google Cloud Console에서 `gokchu-youtube-key`에 애플리케이션
+   제한사항 "IP 주소" → `54.116.217.9`(EC2 Elastic IP) 추가. 적용까지 최대 5분 소요.
+3. **관리자 로그인 rate limiting** — `AdminLoginRateLimiter`(인메모리, IP별 실패 횟수 추적,
+   기본 15분에 5회, `ADMIN_LOGIN_MAX_ATTEMPTS`/`ADMIN_LOGIN_WINDOW_MINUTES`로 조정) 신설.
+   `AdminAuthController.login()`에서 X-Forwarded-For 헤더로 클라이언트 IP 추출(Caddy 뒤에 있어서
+   `getRemoteAddr()`만 쓰면 Caddy 컨테이너 IP가 나옴), 5회 실패 시 6번째부터 비밀번호 안 보고
+   바로 429(`TOO_MANY_LOGIN_ATTEMPTS`). 인스턴스 재시작하면 카운트 초기화되는 한계는 있음
+   (지금 규모에선 충분, 커지면 Redis로 옮길 것).
+   실서버 curl로 6번째 시도에서 429 뜨는 것까지 확인함.
+- 이 세 가지 모두 로컬 curl + 유닛테스트로 검증 완료(전체 테스트 스위트 통과). 아직 프로덕션에는
+  재배포 안 함 — 다음에 할 일.
+
 ### 다음 세션 시작 시 순서
-1. 사용자가 AWS 콘솔에서 EC2/보안그룹/Elastic IP/duckdns 준비 완료했는지 확인
-2. 완료됐으면 SSH 접속 정보 받아서: Dockerfile(멀티스테이지) 작성 → docker-compose에 백엔드+Caddy
-   서비스 추가(Caddy가 duckdns 도메인으로 Let's Encrypt 자동 발급) → 프로덕션 `.env` 값 설정
-   (DB 비밀번호도 `gokchu`/`gokchu` 말고 랜덤으로 교체) → `WebConfig` CORS를 실제 프론트 배포
-   도메인(Vercel)으로 갱신 → YouTube API 키 애플리케이션 제한을 서버 IP로 걸기
-3. 프론트 Vercel 배포, `VITE_API_BASE_URL`을 배포된 백엔드 도메인으로 교체
-4. 배포 완료 후 실사용 스모크 테스트 (손님 신청 → TV 재생 → 관리자 로그인/스킵/폴백관리)
+1. 로컬에서 `./gradlew bootJar` → jar를 서버로 scp → `docker compose -f docker-compose.prod.yml
+   --env-file .env.prod up -d --build`로 재배포 (매장/테이블 API + rate limiting 반영)
+2. 재배포 후 실제 매장/테이블을 API로 만들어서(더 이상 SQL 직접 안 쳐도 됨) 데모 데이터 정리
+3. YouTube 키 IP 제한이 실제로 걸렸는지 재배포 후 `videos.list` 스모크 테스트로 재확인
+4. 이후 순위: 2주차 검색 연동, EBS 볼륨 확장, 배포 자동화(지금은 매번 수동), 3~4주차 항목들
 
 ## 진행 상황 (2026-09-14 기준)
 

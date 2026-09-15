@@ -36,6 +36,8 @@
 | `FALLBACK_TRACK_NOT_FOUND` | 404 | 존재하지 않는 폴백 트랙입니다. (다른 매장 소속인 경우도 동일하게 취급) |
 | `INVALID_ADMIN_PASSWORD` | 401 | 비밀번호가 올바르지 않습니다. (`/api/admin/login`) |
 | `UNAUTHORIZED_ADMIN` | 401 | 관리자 인증이 필요합니다. (관리자 전용 엔드포인트에 유효한 토큰 없이 접근) |
+| `STORE_NOT_FOUND` | 404 | 존재하지 않는 매장입니다. |
+| `TOO_MANY_LOGIN_ATTEMPTS` | 429 | 로그인 시도가 너무 많습니다. (IP당 15분에 5회 초과, `ADMIN_LOGIN_MAX_ATTEMPTS`/`ADMIN_LOGIN_WINDOW_MINUTES`로 조정) |
 
 ---
 
@@ -65,11 +67,86 @@ POST /api/admin/login
 
 이후 관리자 전용 엔드포인트 호출 시 `Authorization: Bearer <token>` 헤더로 사용.
 
+**IP당 15분에 5회로 시도 제한**(인메모리, 인스턴스 재시작하면 초기화됨). 실패할 때마다
+카운트되고 성공하면 초기화. 6번째부터는 비밀번호가 맞아도 확인 없이 바로 `429`.
+
 **에러**
 
 | 상황 | code |
 |---|---|
 | 비밀번호 불일치 | `INVALID_ADMIN_PASSWORD` |
+| 같은 IP에서 시간창 내 5회 초과 시도 | `TOO_MANY_LOGIN_ATTEMPTS` |
+
+---
+
+## 매장 관리 — 전부 관리자 전용, `Authorization: Bearer <token>` 필요
+
+지금은 앱이 매장 하나만 가정하고 만들어졌지만, 매장/테이블 자체는 여러 개 만들 수 있다.
+초기 셋업(매장 개설, 테이블별 QR용 토큰 발급)에 사용.
+
+### 매장 생성
+
+```
+POST /api/stores
+```
+
+**Request Body**
+
+```json
+{ "name": "매장 이름", "regionCode": "KR" }
+```
+
+`regionCode`는 생략 가능(기본 `KR`).
+
+**Response** `201 Created`
+
+```json
+{ "id": 1, "name": "매장 이름", "regionCode": "KR" }
+```
+
+---
+
+### 테이블 생성 (QR용 토큰 발급)
+
+```
+POST /api/stores/{storeId}/tables
+```
+
+**Request Body**
+
+```json
+{ "label": "1번 테이블" }
+```
+
+**Response** `201 Created`
+
+```json
+{ "id": 1, "token": "dfe98382-becd-4a5e-bb63-534d47adea56", "label": "1번 테이블" }
+```
+
+응답의 `token`이 손님용 QR에 심을 `tableToken`(`/guest?tableToken=...` 등).
+
+**에러**
+
+| 상황 | code |
+|---|---|
+| storeId가 존재하지 않음 | `STORE_NOT_FOUND` |
+
+---
+
+### 매장의 테이블 목록 조회
+
+```
+GET /api/stores/{storeId}/tables
+```
+
+**Response** `200 OK` — `TableTokenResponse` 배열.
+
+**에러**
+
+| 상황 | code |
+|---|---|
+| storeId가 존재하지 않음 | `STORE_NOT_FOUND` |
 
 ---
 
