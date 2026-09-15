@@ -1,13 +1,15 @@
 # 곡추 (GokChu) API 명세
 
-> 1주차(MVP) + 재생 흐름(큐 전환) 기준. 구현된 엔드포인트만 기록.
-> 검색(2주차, 하루 100회 쿼터 제약으로 후순위), WebSocket 실시간 push(3주차), 관리자(4주차)는 아직 없음.
+> 1주차(MVP) + 재생 흐름(큐 전환) + 관리자 인증 기준. 구현된 엔드포인트만 기록.
+> 검색(2주차, 하루 100회 쿼터 제약으로 후순위), WebSocket 실시간 push(3주차), 신청 제한/통계(4주차)는 아직 없음.
 > 지금은 TV 클라이언트가 `now-playing`을 짧은 주기로 폴링하는 방식을 전제로 함 — 폴링은 "WebSocket 끊기면 폴링 폴백" 요구사항과 동일 경로라 나중에 WebSocket을 얹어도 이 API들은 그대로 유지됨.
 
 ## 공통 사항
 
 - Base URL: `http://localhost:8080` (로컬)
-- 인증: 없음. 테이블 QR에 담긴 `tableToken`(UUID)이 리소스 접근 단위.
+- 인증: 손님/TV용 엔드포인트는 없음 — 테이블 QR에 담긴 `tableToken`(UUID)이 리소스 접근 단위.
+  관리자 전용 엔드포인트(신청곡 수동 스킵, 폴백 재생목록 관리)는 `POST /api/admin/login`으로 받은
+  토큰을 `Authorization: Bearer <token>` 헤더로 보내야 함. 아래 각 섹션에 표시.
 - Content-Type: `application/json`
 
 ### 공통 에러 응답
@@ -32,6 +34,42 @@
 | `QUEUE_ITEM_NOT_PLAYING` | 409 | 현재 재생 중인 곡이 아닙니다. (`complete`를 재생중이 아닌 곡에 호출) |
 | `QUEUE_ITEM_ALREADY_FINISHED` | 409 | 이미 종료된 큐 항목입니다. (`skip`을 DONE/SKIPPED 곡에 호출) |
 | `FALLBACK_TRACK_NOT_FOUND` | 404 | 존재하지 않는 폴백 트랙입니다. (다른 매장 소속인 경우도 동일하게 취급) |
+| `INVALID_ADMIN_PASSWORD` | 401 | 비밀번호가 올바르지 않습니다. (`/api/admin/login`) |
+| `UNAUTHORIZED_ADMIN` | 401 | 관리자 인증이 필요합니다. (관리자 전용 엔드포인트에 유효한 토큰 없이 접근) |
+
+---
+
+## 관리자 인증
+
+### 로그인
+
+```
+POST /api/admin/login
+```
+
+**Request Body**
+
+```json
+{ "password": "매장 관리자 비밀번호" }
+```
+
+**Response** `200 OK`
+
+```json
+{ "token": "1789485444.ylLrXIMwW..." }
+```
+
+토큰은 서버가 시크릿으로 서명한 `만료시각.서명` 형태(HMAC-SHA256), 기본 12시간 유효
+(`ADMIN_TOKEN_TTL_SECONDS`로 조정 가능). DB에 저장하지 않는 stateless 토큰이라 서버
+재시작에도 시크릿(`ADMIN_TOKEN_SECRET`)만 그대로면 유효.
+
+이후 관리자 전용 엔드포인트 호출 시 `Authorization: Bearer <token>` 헤더로 사용.
+
+**에러**
+
+| 상황 | code |
+|---|---|
+| 비밀번호 불일치 | `INVALID_ADMIN_PASSWORD` |
 
 ---
 
@@ -203,7 +241,7 @@ TV의 YouTube IFrame Player가 `onStateChange`에서 `ENDED`를 감지했을 때
 
 ---
 
-### 곡 스킵
+### 곡 스킵 (관리자 전용 — `Authorization: Bearer <token>` 필요)
 
 ```
 POST /api/tables/{tableToken}/queue-items/{queueItemId}/skip
@@ -221,16 +259,28 @@ POST /api/tables/{tableToken}/queue-items/{queueItemId}/skip
 | 상황 | code |
 |---|---|
 | tableToken이 존재하지 않음 | `TABLE_TOKEN_NOT_FOUND` |
+| Authorization 헤더가 없거나 토큰이 유효하지 않음/만료됨 | `UNAUTHORIZED_ADMIN` |
 | queueItemId가 존재하지 않거나 다른 매장 소속 | `QUEUE_ITEM_NOT_FOUND` |
 | 이미 `DONE` 또는 `SKIPPED` 상태인 항목 | `QUEUE_ITEM_ALREADY_FINISHED` |
 
 ---
 
-## 폴백 재생목록 (Fallback)
+### 재생 불가 신고 (TV 전용, 공개)
+
+```
+POST /api/tables/{tableToken}/queue-items/{queueItemId}/report-unplayable
+```
+
+TV의 YouTube IFrame Player가 `onError`를 만났을 때(사전 검증을 뚫고 들어온 재생 불가
+영상) 호출. 로직은 `skip`과 완전히 동일하지만 **인증이 필요 없다** — TV는 자격 증명이
+없는 공용 기기라서 관리자 전용 엔드포인트를 쓸 수 없기 때문에 별도로 공개해둔 경로.
+응답/에러는 `skip`과 동일(단, `UNAUTHORIZED_ADMIN`은 해당 없음).
+
+---
+
+## 폴백 재생목록 (Fallback) — 전부 관리자 전용, `Authorization: Bearer <token>` 필요
 
 매장이 미리 등록해둔 재생목록. 신청곡이 없을 때 여기서 셔플로 재생된다.
-아직 관리자 인증이 없어서 누구나(테이블 토큰만 알면) 추가할 수 있는 상태 — 4주차
-관리자 기능에서 보호 예정.
 
 ### 폴백 트랙 등록
 
@@ -312,5 +362,5 @@ DELETE /api/tables/{tableToken}/fallback-tracks/{fallbackTrackId}
 - WebSocket `/ws` — `now-playing` 폴링을 대체할 실시간 push (3주차)
 - 단골손님 개인 플레이리스트 저장/재생 (언급만 됨, 스키마 미정 — 폴백 재생목록과는
   별개 개념으로 나중에 설계)
-- 관리자 API (신청 일시중단, 통계, 폴백 트랙 관리 보호) (4주차)
+- 관리자 API (신청 일시중단, 통계) (4주차) — 스킵/폴백 관리는 인증 완료됨
 - 신청 제한(테이블당 N곡) 관련 응답/에러 코드 (4주차)

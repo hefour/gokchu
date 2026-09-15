@@ -19,5 +19,10 @@ youtube:
   api-key: ${YOUTUBE_API_KEY:}
   base-url: https://www.googleapis.com/youtube/v3
 
+admin:
+  password: ${ADMIN_PASSWORD:changeme}
+  token-secret: ${ADMIN_TOKEN_SECRET:local-dev-secret-change-me}
+  token-ttl-seconds: ${ADMIN_TOKEN_TTL_SECONDS:43200}
+
 server:
   port: 8080

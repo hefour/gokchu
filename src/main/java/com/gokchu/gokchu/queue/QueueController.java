@@ -57,4 +57,17 @@ public class QueueController {
                 .map(ResponseEntity::ok)
                 .orElseGet(() -> ResponseEntity.noContent().build());
     }
+
+    /**
+     * TV 플레이어가 재생 불가 영상을 만났을 때 자동으로 호출하는 공개 엔드포인트.
+     * 관리자가 수동으로 누르는 {@link #skip}과 로직은 같지만 인증을 요구하지 않는다 —
+     * TV는 자격 증명이 없는 공용 기기라서 관리자 전용 엔드포인트를 쓸 수 없다.
+     */
+    @PostMapping("/queue-items/{queueItemId}/report-unplayable")
+    public ResponseEntity<NowPlayingResponse> reportUnplayable(
+            @PathVariable UUID tableToken, @PathVariable Long queueItemId) {
+        return queueService.skip(tableToken, queueItemId)
+                .map(ResponseEntity::ok)
+                .orElseGet(() -> ResponseEntity.noContent().build());
+    }
 }

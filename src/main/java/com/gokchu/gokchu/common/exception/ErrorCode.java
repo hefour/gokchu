@@ -12,7 +12,9 @@ public enum ErrorCode {
     QUEUE_ITEM_NOT_FOUND(HttpStatus.NOT_FOUND, "존재하지 않는 큐 항목입니다."),
     QUEUE_ITEM_NOT_PLAYING(HttpStatus.CONFLICT, "현재 재생 중인 곡이 아닙니다."),
     QUEUE_ITEM_ALREADY_FINISHED(HttpStatus.CONFLICT, "이미 종료된 큐 항목입니다."),
-    FALLBACK_TRACK_NOT_FOUND(HttpStatus.NOT_FOUND, "존재하지 않는 폴백 트랙입니다.");
+    FALLBACK_TRACK_NOT_FOUND(HttpStatus.NOT_FOUND, "존재하지 않는 폴백 트랙입니다."),
+    INVALID_ADMIN_PASSWORD(HttpStatus.UNAUTHORIZED, "비밀번호가 올바르지 않습니다."),
+    UNAUTHORIZED_ADMIN(HttpStatus.UNAUTHORIZED, "관리자 인증이 필요합니다.");
 
     private final HttpStatus status;
     private final String message;

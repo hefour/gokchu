@@ -62,6 +62,56 @@
 - 개인 식별 기반 제한(로그인, 기기 지문 등) — 이 프로젝트 스코프 아님, 테이블 토큰으로 충분
 - `relatedToVideoId` 기반 추천 API 사용 — 이미 폐지된 기능
 
+## 진행 상황 (2026-09-15 기준)
+
+### 이번 세션 — 관리자 인증 + 클라우드 배포 준비 착수
+- 배경: 프론트 폴백 재생목록 관리 UI까지 만들고 나니, `tableToken`이 손님용 QR과 관리자
+  액션(스킵, 폴백관리)에 동시에 쓰여서 **QR 스캔한 손님 누구나 관리자 기능을 쓸 수 있는 구멍**이
+  발견됨. AWS EC2 배포를 앞두고 이걸 먼저 막기로 함.
+- `com.gokchu.gokchu.admin` 패키지 신설:
+  - `AdminTokenService` — HMAC-SHA256으로 서명한 stateless 토큰 발급/검증 (`만료시각.서명` 형태,
+    DB 저장 없음, 기본 12시간 유효). 시크릿/만료시간은 `ADMIN_TOKEN_SECRET`/`ADMIN_TOKEN_TTL_SECONDS`.
+  - `AdminAuthController` — `POST /api/admin/login`, `ADMIN_PASSWORD` 환경변수와 상수시간 비교.
+  - `AdminAuthInterceptor` + `WebConfig.addInterceptors` — `/queue-items/*/skip`,
+    `/fallback-tracks`(전체)를 관리자 토큰 없으면 401(`UNAUTHORIZED_ADMIN`)로 막음.
+- **중요한 버그를 구현 중 발견**: TV의 `onError`(재생 불가 영상 자동 스킵)가 기존 `skip`
+  엔드포인트를 썼는데, 그걸 관리자 전용으로 막아버리면 TV가 자기 화면도 못 넘김 — TV는 자격증명이
+  없는 공용 기기라서. `POST /queue-items/{id}/report-unplayable`(공개, `skip`과 로직 동일)을
+  새로 만들어서 분리. 관리자 수동 스킵 = `skip`(인증 필요), TV 자동 스킵 = `report-unplayable`(공개).
+- Spring 생성자 주입 관련 삽질: `AdminTokenService`에 프로덕션용 생성자(`@Value` 2개)와
+  테스트용 생성자(secret/ttl/Clock 직접 주입, package-private)를 같이 뒀더니 Spring이 어느 걸
+  쓸지 못 정해서 `NoSuchMethodException: <init>()`으로 컨텍스트 로딩이 깨짐 — 프로덕션 생성자에
+  `@Autowired` 명시해서 해결. **여러 생성자 있는 빈은 반드시 하나에 `@Autowired` 명시할 것**.
+- 테스트 8건 추가(`AdminTokenServiceTest` 6, `AdminAuthControllerTest` 2, `AdminAuthInterceptorTest` 3
+  — 실제론 파일 3개 총 11개). 전체 48개 테스트 통과.
+- 로컬 `.env`에 랜덤 `ADMIN_PASSWORD`/`ADMIN_TOKEN_SECRET` 생성해서 추가, `.env.example` 신설(리포에
+  커밋되는 건 이쪽, 실제 값 없는 템플릿).
+- 실 서버로 curl 검증: 미인증 스킵/폴백조회 401 → 로그인 → 토큰으로 재시도 200/204, TV의
+  `report-unplayable`은 인증 없이 204 — 전부 의도대로.
+- 프론트: `lib/adminAuth.ts`(세션스토리지 토큰), `AdminLogin` 컴포넌트, `AdminPage`가 토큰 없으면
+  로그인 화면을 먼저 보여주도록 게이팅. `skipQueueItem`/`addFallbackTrack`/`deleteFallbackTrack`/
+  `fetchFallbackTracks`는 `adminToken` 파라미터 필수로 시그니처 변경, `TvPage`는 새로 만든
+  `reportUnplayableQueueItem`(공개)로 교체. `api.ts`의 `request()` 헤더 병합 버그도 같이 고침
+  (`{headers: {...}, ...options}`면 `options.headers`가 기본 헤더를 통째로 덮어써서 Content-Type이
+  날아가는 문제 — `{...options, headers: {기본값, ...options?.headers}}` 순서로 수정).
+- **배포 방향 확정**: Oracle Cloud 대신 AWS EC2로 진행 (포트폴리오 가치 때문에 사용자가 직접 선택,
+  Oracle은 국내 채용에서 거의 안 물어봄). 사용자의 AWS 계정은 2025년 정책 변경 이후 가입이라
+  "12개월 무료 EC2 750시간" 구체계가 아니라 **크레딧 소진형 신체계** — 확인 시점 남은 크레딧
+  $83.09, 이번 달 $13.77 예상 소진, 만료 2026-12-26. EC2 24시간 가동 얹으면 크레딧이 만료일보다
+  먼저 바닥날 가능성 높음 — 그 이후엔 진짜 카드 청구됨. 배포 전에 Billing 콘솔 예산 알람 걸어두기 권장.
+- 도메인은 없어서 무료 옵션(duckdns.org)으로 진행하기로 함.
+- AWS 콘솔 작업(EC2 인스턴스, 보안그룹, Elastic IP, duckdns 연결)은 사용자가 직접 해야 함(자격증명
+  없어서 대신 못 함) — 끝나면 퍼블릭 IP/도메인 받아서 SSH로 배포 진행 예정.
+
+### 다음 세션 시작 시 순서
+1. 사용자가 AWS 콘솔에서 EC2/보안그룹/Elastic IP/duckdns 준비 완료했는지 확인
+2. 완료됐으면 SSH 접속 정보 받아서: Dockerfile(멀티스테이지) 작성 → docker-compose에 백엔드+Caddy
+   서비스 추가(Caddy가 duckdns 도메인으로 Let's Encrypt 자동 발급) → 프로덕션 `.env` 값 설정
+   (DB 비밀번호도 `gokchu`/`gokchu` 말고 랜덤으로 교체) → `WebConfig` CORS를 실제 프론트 배포
+   도메인(Vercel)으로 갱신 → YouTube API 키 애플리케이션 제한을 서버 IP로 걸기
+3. 프론트 Vercel 배포, `VITE_API_BASE_URL`을 배포된 백엔드 도메인으로 교체
+4. 배포 완료 후 실사용 스모크 테스트 (손님 신청 → TV 재생 → 관리자 로그인/스킵/폴백관리)
+
 ## 진행 상황 (2026-09-14 기준)
 
 ### 이번 세션 (2026-09-14) — 1주차 검증 완료
