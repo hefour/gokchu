@@ -64,4 +64,15 @@ class AdminAuthInterceptorTest {
                 .extracting(e -> ((GokchuException) e).getErrorCode())
                 .isEqualTo(ErrorCode.UNAUTHORIZED_ADMIN);
     }
+
+    @Test
+    void preHandle_CORS_프리플라이트_요청이면_인증_없이_통과한다() {
+        when(request.getMethod()).thenReturn("OPTIONS");
+        when(request.getHeader("Origin")).thenReturn("https://gokchu-frontend.vercel.app");
+        when(request.getHeader("Access-Control-Request-Method")).thenReturn("POST");
+
+        boolean result = interceptor.preHandle(request, response, new Object());
+
+        assertThat(result).isTrue();
+    }
 }
