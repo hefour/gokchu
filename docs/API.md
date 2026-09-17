@@ -355,6 +355,40 @@ TV의 YouTube IFrame Player가 `onError`를 만났을 때(사전 검증을 뚫�
 
 ---
 
+## 볼륨 (Volume)
+
+매장(TV)의 볼륨/음소거 상태. `report-unplayable`과 마찬가지로 TV가 인증 없이 폴링해야
+해서 조회(GET)는 공개, 변경(POST)만 관리자 전용으로 나눔 — tableToken이 손님용 QR에도
+쓰이므로 변경까지 공개하면 손님이 매장 TV 볼륨을 마음대로 끄거나 최대로 올릴 수 있음.
+
+### 볼륨 조회 (공개)
+
+```
+GET /api/tables/{tableToken}/volume
+```
+
+**Response** `200 OK`
+
+```json
+{ "volume": 70, "muted": false }
+```
+
+### 볼륨 변경 (관리자 전용 — `Authorization: Bearer <token>` 필요)
+
+```
+POST /api/tables/{tableToken}/volume/update
+```
+
+**Request Body**
+
+```json
+{ "volume": 30, "muted": false }
+```
+
+`volume`은 0~100. **Response**는 조회와 동일한 `VolumeResponse`.
+
+---
+
 ## 폴백 재생목록 (Fallback) — 전부 관리자 전용, `Authorization: Bearer <token>` 필요
 
 매장이 미리 등록해둔 재생목록. 신청곡이 없을 때 여기서 셔플로 재생된다.

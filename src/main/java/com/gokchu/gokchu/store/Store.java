@@ -37,6 +37,12 @@ public class Store {
     @Column(name = "current_fallback_thumbnail_url", length = 500)
     private String currentFallbackThumbnailUrl;
 
+    @Column(nullable = false)
+    private int volume = 70;
+
+    @Column(nullable = false)
+    private boolean muted = false;
+
     @Builder
     public Store(String name, String regionCode) {
         this.name = name;
@@ -57,5 +63,10 @@ public class Store {
         this.currentFallbackVideoId = null;
         this.currentFallbackTitle = null;
         this.currentFallbackThumbnailUrl = null;
+    }
+
+    public void updateVolume(int volume, boolean muted) {
+        this.volume = volume;
+        this.muted = muted;
     }
 }

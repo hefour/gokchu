@@ -36,6 +36,7 @@ public class WebConfig implements WebMvcConfigurer {
                         "/api/tables/*/queue-items/*/skip",
                         "/api/tables/*/fallback-tracks",
                         "/api/tables/*/fallback-tracks/*",
+                        "/api/tables/*/volume/update",
                         "/api/stores",
                         "/api/stores/*/tables"
                 );
