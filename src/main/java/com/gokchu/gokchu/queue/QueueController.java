@@ -59,6 +59,18 @@ public class QueueController {
     }
 
     /**
+     * 관리자가 관리자 페이지에서 현재 재생중인 폴백 트랙(배경음악)을 수동으로 건너뛸 때 쓰는
+     * 엔드포인트. 신청곡 스킵({@link #skip})과 달리 대상을 특정할 필요가 없다 — 매장에 폴백은
+     * 항상 최대 1개만 재생중이라서.
+     */
+    @PostMapping("/now-playing/skip-fallback")
+    public ResponseEntity<NowPlayingResponse> skipFallback(@PathVariable UUID tableToken) {
+        return queueService.skipFallback(tableToken)
+                .map(ResponseEntity::ok)
+                .orElseGet(() -> ResponseEntity.noContent().build());
+    }
+
+    /**
      * TV 플레이어가 재생 불가 영상을 만났을 때 자동으로 호출하는 공개 엔드포인트.
      * 관리자가 수동으로 누르는 {@link #skip}과 로직은 같지만 인증을 요구하지 않는다 —
      * TV는 자격 증명이 없는 공용 기기라서 관리자 전용 엔드포인트를 쓸 수 없다.

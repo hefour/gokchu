@@ -62,6 +62,25 @@
 - 개인 식별 기반 제한(로그인, 기기 지문 등) — 이 프로젝트 스코프 아님, 테이블 토큰으로 충분
 - `relatedToVideoId` 기반 추천 API 사용 — 이미 폐지된 기능
 
+## 진행 상황 (2026-09-21 기준)
+
+### 이번 세션 — 폴백 트랙 스킵 API 추가
+- 배경: 관리자가 신청곡은 `skip`으로 건너뛸 수 있는데, 큐가 비어서 폴백(배경음악)이 재생중일
+  땐 건너뛸 방법이 아예 없었음(관리자 페이지 "다음 곡 재생" 버튼도 큐에 `PLAYING` 항목이 없으면
+  비활성화). TV의 `onError` 자동 스킵은 `completeNowPlaying`으로 우회 처리돼 있었지만, 그건
+  "관리자가 지금 나오는 배경음악이 마음에 안 들어서 수동으로 바꾸고 싶다"는 케이스를 못 채움.
+- `QueueService.skipFallback(tableToken)` 신규 — 지금 폴백이 재생중이 아니면(신청곡이 재생중이거나
+  아무것도 없으면) `FALLBACK_NOT_PLAYING`(409) 예외. 재생중이면 방금 트랙을 제외하고 무작위로
+  다음 폴백을 고름(`completeNowPlaying`의 폴백 전환 로직과 동일한 `startFallback` 재사용).
+- `QueueController`: `POST /api/tables/{tableToken}/now-playing/skip-fallback` 추가, 관리자
+  인증 필요(`WebConfig` 인터셉터 목록에 경로 추가). `ErrorCode.FALLBACK_NOT_PLAYING` 신규.
+- 테스트 4건 추가(`QueueServiceTest`) — 정상 스킵, 트랙 1개뿐일 때 재생, 신청곡 재생중 예외,
+  아무것도 재생중 아닐 때 예외. 전체 스위트 통과(`GokchuApplicationTests`는 로컬 Docker Postgres
+  안 띄워서 이번에도 미실행 — 기존부터 있던 환경 제약, 이 변경과 무관).
+- 프론트: `AdminPage`가 이제 `now-playing`도 폴링해서, 폴백 재생중일 땐 헤더 버튼과 별도 카드로
+  "폴백 재생 중 (배경음악)" + 스킵 버튼을 보여줌. `api.ts`에 `skipFallbackTrack` 추가.
+- `docs/API.md`에 새 엔드포인트/에러코드 반영.
+
 ## 진행 상황 (2026-09-15 기준)
 
 ### 이번 세션 — 관리자 인증 + 클라우드 배포 준비 착수

@@ -34,6 +34,7 @@
 | `QUEUE_ITEM_NOT_PLAYING` | 409 | 현재 재생 중인 곡이 아닙니다. (`complete`를 재생중이 아닌 곡에 호출) |
 | `QUEUE_ITEM_ALREADY_FINISHED` | 409 | 이미 종료된 큐 항목입니다. (`skip`을 DONE/SKIPPED 곡에 호출) |
 | `FALLBACK_TRACK_NOT_FOUND` | 404 | 존재하지 않는 폴백 트랙입니다. (다른 매장 소속인 경우도 동일하게 취급) |
+| `FALLBACK_NOT_PLAYING` | 409 | 현재 재생 중인 폴백 트랙이 없습니다. (`skip-fallback`을 신청곡 재생중이거나 아무것도 재생중이 아닐 때 호출) |
 | `INVALID_ADMIN_PASSWORD` | 401 | 비밀번호가 올바르지 않습니다. (`/api/admin/login`) |
 | `UNAUTHORIZED_ADMIN` | 401 | 관리자 인증이 필요합니다. (관리자 전용 엔드포인트에 유효한 토큰 없이 접근) |
 | `STORE_NOT_FOUND` | 404 | 존재하지 않는 매장입니다. |
@@ -326,8 +327,8 @@ POST /api/tables/{tableToken}/queue-items/{queueItemId}/skip
 
 특정 신청곡 `queueItemId`를 `SKIPPED`로 변경. 스킵 대상이 현재 재생중이었다면
 `now-playing/complete`와 동일한 승격/폴백 전환 로직을 탄다. 대기중인 곡을 스킵한
-경우 현재 재생중인 것(신청곡이든 폴백이든)은 바뀌지 않는다. 폴백 트랙 자체를
-스킵하는 기능은 아직 없음(신청곡 전용).
+경우 현재 재생중인 것(신청곡이든 폴백이든)은 바뀌지 않는다. 큐 항목 전용 — 지금
+재생중인 게 폴백 트랙이면 대신 아래 `now-playing/skip-fallback`을 쓴다.
 
 **Response**: `NowPlayingResponse` 또는 `204 No Content`(스킵 후 재생중인 게 없음).
 
@@ -339,6 +340,31 @@ POST /api/tables/{tableToken}/queue-items/{queueItemId}/skip
 | Authorization 헤더가 없거나 토큰이 유효하지 않음/만료됨 | `UNAUTHORIZED_ADMIN` |
 | queueItemId가 존재하지 않거나 다른 매장 소속 | `QUEUE_ITEM_NOT_FOUND` |
 | 이미 `DONE` 또는 `SKIPPED` 상태인 항목 | `QUEUE_ITEM_ALREADY_FINISHED` |
+
+---
+
+### 폴백 트랙 스킵 (관리자 전용 — `Authorization: Bearer <token>` 필요)
+
+```
+POST /api/tables/{tableToken}/now-playing/skip-fallback
+```
+
+지금 재생중인 폴백 트랙(배경음악)을 다른 폴백 트랙으로 건너뛴다. 폴백은 매장에
+동시에 최대 1개만 재생되므로 `skip`과 달리 대상 id를 받지 않는다. 방금 끝난 트랙은
+후보에서 제외하고 무작위로 고르며(트랙이 하나뿐이면 같은 트랙을 다시 재생), 등록된
+폴백 트랙 자체가 없으면 폴백 상태를 비운다. 지금 재생중인 게 신청곡이면(폴백이 아니면)
+쓸 수 없다 — 그 경우엔 `skip`을 쓴다.
+
+**Response**: `NowPlayingResponse`(항상 `source: FALLBACK`) 또는 `204 No Content`
+(등록된 폴백 트랙 자체가 없어진 경우).
+
+**에러**
+
+| 상황 | code |
+|---|---|
+| tableToken이 존재하지 않음 | `TABLE_TOKEN_NOT_FOUND` |
+| Authorization 헤더가 없거나 토큰이 유효하지 않음/만료됨 | `UNAUTHORIZED_ADMIN` |
+| 지금 재생중인 폴백 트랙이 없음(신청곡이 재생중이거나 아무것도 재생중이 아님) | `FALLBACK_NOT_PLAYING` |
 
 ---
 

@@ -335,6 +335,51 @@ class QueueServiceTest {
     }
 
     @Test
+    void skipFallback_재생중인_폴백을_건너뛰면_다른_폴백트랙으로_넘어간다() {
+        FallbackTrack current = fallbackTrack(1L, "fb1");
+        FallbackTrack other = fallbackTrack(2L, "fb2");
+        store.startFallback(current);
+        when(fallbackTrackRepository.findByStoreId(STORE_ID)).thenReturn(List.of(current, other));
+
+        Optional<NowPlayingResponse> response = queueService.skipFallback(tableToken);
+
+        assertThat(response).isPresent();
+        assertThat(response.get().source()).isEqualTo(NowPlayingSource.FALLBACK);
+        assertThat(response.get().videoId()).isEqualTo("fb2");
+    }
+
+    @Test
+    void skipFallback_폴백트랙이_하나뿐이면_같은_트랙을_다시_재생한다() {
+        FallbackTrack onlyTrack = fallbackTrack(1L, "fb1");
+        store.startFallback(onlyTrack);
+        when(fallbackTrackRepository.findByStoreId(STORE_ID)).thenReturn(List.of(onlyTrack));
+
+        Optional<NowPlayingResponse> response = queueService.skipFallback(tableToken);
+
+        assertThat(response).isPresent();
+        assertThat(response.get().videoId()).isEqualTo("fb1");
+    }
+
+    @Test
+    void skipFallback_재생중인_폴백이_없으면_예외가_발생한다() {
+        assertThatThrownBy(() -> queueService.skipFallback(tableToken))
+                .isInstanceOf(GokchuException.class)
+                .extracting(e -> ((GokchuException) e).getErrorCode())
+                .isEqualTo(ErrorCode.FALLBACK_NOT_PLAYING);
+    }
+
+    @Test
+    void skipFallback_신청곡이_재생중이면_예외가_발생한다() {
+        when(queueItemRepository.findFirstByStoreIdAndStatusOrderByRequestedAtAsc(STORE_ID, QueueItemStatus.PLAYING))
+                .thenReturn(Optional.of(queueItem(1L, QueueItemStatus.PLAYING)));
+
+        assertThatThrownBy(() -> queueService.skipFallback(tableToken))
+                .isInstanceOf(GokchuException.class)
+                .extracting(e -> ((GokchuException) e).getErrorCode())
+                .isEqualTo(ErrorCode.FALLBACK_NOT_PLAYING);
+    }
+
+    @Test
     void skip_다른_매장_큐항목이면_예외가_발생한다() {
         Store otherStore = Store.builder().name("다른 매장").regionCode("KR").build();
         ReflectionTestUtils.setField(otherStore, "id", 2L);

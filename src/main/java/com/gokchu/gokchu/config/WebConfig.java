@@ -34,6 +34,7 @@ public class WebConfig implements WebMvcConfigurer {
         registry.addInterceptor(adminAuthInterceptor)
                 .addPathPatterns(
                         "/api/tables/*/queue-items/*/skip",
+                        "/api/tables/*/now-playing/skip-fallback",
                         "/api/tables/*/fallback-tracks",
                         "/api/tables/*/fallback-tracks/*",
                         "/api/tables/*/volume/update",

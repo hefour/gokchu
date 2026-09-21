@@ -141,6 +141,24 @@ public class QueueService {
         return startFallback(store, null);
     }
 
+    /**
+     * 관리자가 현재 재생중인 폴백 트랙을 수동으로 건너뛴다. 신청곡이 재생중일 때는 대상이 없으므로
+     * (관리자는 그 경우 {@link #skip}을 쓴다) 예외를 던진다.
+     */
+    @Transactional
+    public Optional<NowPlayingResponse> skipFallback(UUID tableToken) {
+        TableToken table = findTable(tableToken);
+        Store store = table.getStore();
+
+        if (!store.hasFallbackPlaying()) {
+            throw new GokchuException(ErrorCode.FALLBACK_NOT_PLAYING);
+        }
+
+        String justFinishedFallbackVideoId = store.getCurrentFallbackVideoId();
+        store.clearFallback();
+        return startFallback(store, justFinishedFallbackVideoId);
+    }
+
     private Optional<NowPlayingResponse> currentNowPlaying(Store store) {
         Optional<QueueItem> playing = findPlayingQueueItem(store.getId());
         if (playing.isPresent()) {
