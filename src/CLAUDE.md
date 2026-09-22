@@ -99,6 +99,22 @@
   허용 가능한 트레이드오프), 쿼터 리셋이 서버 로컬시각(UTC) 기준이라 실제 유튜브 쿼터 리셋
   시각(태평양시)과 약간 어긋남(안전 마진 있어서 지금은 무시 가능).
 
+### 이번 세션 (후속) — 로컬 엔드투엔드 검증 시도, 절반만 완료
+- Docker Desktop(`C:\Users\he4\AppData\Local\Programs\DockerDesktop\Docker Desktop.exe` —
+  `Program Files`가 아니라 유저 로컬 경로에 설치돼 있음, 다음에 또 헷갈리지 말 것) 기동 →
+  `docker compose up -d` → 로컬 `./gradlew bootRun`으로 백엔드 기동.
+- **V4 마이그레이션이 실제 Postgres에 정상 적용됨을 확인**(Flyway 로그: `Migrating schema
+  "public" to version "4 - search cache"` → 성공). 관리자 로그인/미인증 401도 curl로 확인.
+- **실제 검색 API 호출은 로컬에서 검증 불가로 확인됨** — `YOUTUBE_API_ERROR`(502)가 나서
+  원인을 직접 유튜브 API에 curl로 찔러보니 `API_KEY_IP_ADDRESS_BLOCKED`: 이 키가 지난 세션에
+  보안 목적으로 EC2 Elastic IP(`54.116.217.9`)로 제한돼 있어서, 로컬 PC IP에서는 검색이든
+  기존 링크 등록(`videos.list`)이든 **어떤 유튜브 API 호출도 로컬에서 안 됨**(신규 검색
+  기능만의 문제가 아니라 기존 기능도 동일 — `POST /queue-items`로 직접 재현해서 확인).
+  **다음에 로컬에서 유튜브 관련 기능을 테스트해야 하면 이 IP 제한부터 염두에 둘 것**
+  (Cloud Console에서 임시로 현재 IP 허용 추가 → 테스트 → 원복, 또는 배포 후 서버에서 검증).
+- 사용자 판단으로 이번엔 여기까지만 하고, 실제 검색 동작(캐시 히트/미스, 쿼터 상한)은
+  다음 배포 때 EC2 서버에서 검증하기로 함. 로컬 Postgres 컨테이너/백엔드 프로세스는 정리함.
+
 ## 진행 상황 (2026-09-21 기준)
 
 ### 이번 세션 — 폴백 트랙 스킵 API 추가
