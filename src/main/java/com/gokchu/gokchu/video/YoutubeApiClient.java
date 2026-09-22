@@ -29,12 +29,20 @@ public class YoutubeApiClient {
     }
 
     public VideosListResponse fetchVideoDetails(String videoId) {
+        return fetchVideoDetails(List.of(videoId));
+    }
+
+    /**
+     * videos.list는 콤마로 구분한 videoId를 한 번에 최대 50개까지 받아도 여전히 1유닛만 소모한다 —
+     * 검색 결과 전체를 한 번의 호출로 검증/캐싱하기 위해 배치로 조회.
+     */
+    public VideosListResponse fetchVideoDetails(List<String> videoIds) {
         try {
             VideosListResponse response = restClient.get()
                     .uri(uriBuilder -> uriBuilder
                             .path("/videos")
                             .queryParam("part", "snippet,status,contentDetails")
-                            .queryParam("id", videoId)
+                            .queryParam("id", String.join(",", videoIds))
                             .queryParam("key", properties.apiKey())
                             .build())
                     .retrieve()
@@ -49,8 +57,43 @@ public class YoutubeApiClient {
         }
     }
 
+    public SearchListResponse search(String query, int maxResults) {
+        try {
+            SearchListResponse response = restClient.get()
+                    .uri(uriBuilder -> uriBuilder
+                            .path("/search")
+                            .queryParam("part", "snippet")
+                            .queryParam("type", "video")
+                            .queryParam("q", query)
+                            .queryParam("maxResults", maxResults)
+                            .queryParam("key", properties.apiKey())
+                            .build())
+                    .retrieve()
+                    .body(SearchListResponse.class);
+
+            if (response == null) {
+                throw new GokchuException(ErrorCode.YOUTUBE_API_ERROR);
+            }
+            return response;
+        } catch (RestClientException e) {
+            throw new GokchuException(ErrorCode.YOUTUBE_API_ERROR);
+        }
+    }
+
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record VideosListResponse(List<VideoItem> items) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record SearchListResponse(List<SearchResultItem> items) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record SearchResultItem(SearchResultId id, Snippet snippet) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record SearchResultId(String videoId) {
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)

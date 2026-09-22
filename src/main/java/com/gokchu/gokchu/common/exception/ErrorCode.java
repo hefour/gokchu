@@ -17,7 +17,8 @@ public enum ErrorCode {
     INVALID_ADMIN_PASSWORD(HttpStatus.UNAUTHORIZED, "비밀번호가 올바르지 않습니다."),
     UNAUTHORIZED_ADMIN(HttpStatus.UNAUTHORIZED, "관리자 인증이 필요합니다."),
     STORE_NOT_FOUND(HttpStatus.NOT_FOUND, "존재하지 않는 매장입니다."),
-    TOO_MANY_LOGIN_ATTEMPTS(HttpStatus.TOO_MANY_REQUESTS, "로그인 시도가 너무 많습니다. 잠시 후 다시 시도해 주세요.");
+    TOO_MANY_LOGIN_ATTEMPTS(HttpStatus.TOO_MANY_REQUESTS, "로그인 시도가 너무 많습니다. 잠시 후 다시 시도해 주세요."),
+    SEARCH_QUOTA_EXCEEDED(HttpStatus.TOO_MANY_REQUESTS, "오늘 검색 가능 횟수를 모두 사용했습니다. 링크로 추가해 주세요.");
 
     private final HttpStatus status;
     private final String message;

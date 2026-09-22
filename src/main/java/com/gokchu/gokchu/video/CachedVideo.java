@@ -15,7 +15,9 @@ import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Set;
+import java.util.function.Function;
 
 @Entity
 @Table(name = "cached_videos")
@@ -80,5 +82,47 @@ public class CachedVideo {
             return !blockedRegions.contains(regionCode);
         }
         return true;
+    }
+
+    /** YouTube {@code videos.list} 응답 한 건을 캐시 엔티티로 매핑한다 — 링크 등록/검색 양쪽에서 공유. */
+    public static CachedVideo fromApiItem(YoutubeApiClient.VideoItem item) {
+        boolean embeddable = item.status() != null && Boolean.TRUE.equals(item.status().embeddable());
+
+        return CachedVideo.builder()
+                .videoId(item.id())
+                .title(item.snippet().title())
+                .thumbnailUrl(resolveThumbnail(item.snippet().thumbnails()))
+                .channelTitle(item.snippet().channelTitle())
+                .embeddable(embeddable)
+                .allowedRegions(extractRegions(item, YoutubeApiClient.RegionRestriction::allowed))
+                .blockedRegions(extractRegions(item, YoutubeApiClient.RegionRestriction::blocked))
+                .build();
+    }
+
+    private static Set<String> extractRegions(
+            YoutubeApiClient.VideoItem item,
+            Function<YoutubeApiClient.RegionRestriction, List<String>> extractor
+    ) {
+        if (item.contentDetails() == null || item.contentDetails().regionRestriction() == null) {
+            return Set.of();
+        }
+        List<String> regions = extractor.apply(item.contentDetails().regionRestriction());
+        return regions == null ? Set.of() : Set.copyOf(regions);
+    }
+
+    private static String resolveThumbnail(YoutubeApiClient.Thumbnails thumbnails) {
+        if (thumbnails == null) {
+            return "";
+        }
+        if (thumbnails.high() != null) {
+            return thumbnails.high().url();
+        }
+        if (thumbnails.medium() != null) {
+            return thumbnails.medium().url();
+        }
+        if (thumbnails.defaultThumbnail() != null) {
+            return thumbnails.defaultThumbnail().url();
+        }
+        return "";
     }
 }

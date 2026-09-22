@@ -18,6 +18,8 @@ spring:
 youtube:
   api-key: ${YOUTUBE_API_KEY:}
   base-url: https://www.googleapis.com/youtube/v3
+  search:
+    daily-limit: ${YOUTUBE_SEARCH_DAILY_LIMIT:50}
 
 admin:
   password: ${ADMIN_PASSWORD:changeme}

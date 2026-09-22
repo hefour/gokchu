@@ -1,7 +1,7 @@
 # 곡추 (GokChu) API 명세
 
-> 1주차(MVP) + 재생 흐름(큐 전환) + 관리자 인증 기준. 구현된 엔드포인트만 기록.
-> 검색(2주차, 하루 100회 쿼터 제약으로 후순위), WebSocket 실시간 push(3주차), 신청 제한/통계(4주차)는 아직 없음.
+> 1주차(MVP) + 재생 흐름(큐 전환) + 관리자 인증 + 관리자용 검색 기준. 구현된 엔드포인트만 기록.
+> WebSocket 실시간 push(3주차), 신청 제한/통계(4주차)는 아직 없음.
 > 지금은 TV 클라이언트가 `now-playing`을 짧은 주기로 폴링하는 방식을 전제로 함 — 폴링은 "WebSocket 끊기면 폴링 폴백" 요구사항과 동일 경로라 나중에 WebSocket을 얹어도 이 API들은 그대로 유지됨.
 
 ## 공통 사항
@@ -39,6 +39,7 @@
 | `UNAUTHORIZED_ADMIN` | 401 | 관리자 인증이 필요합니다. (관리자 전용 엔드포인트에 유효한 토큰 없이 접근) |
 | `STORE_NOT_FOUND` | 404 | 존재하지 않는 매장입니다. |
 | `TOO_MANY_LOGIN_ATTEMPTS` | 429 | 로그인 시도가 너무 많습니다. (IP당 15분에 5회 초과, `ADMIN_LOGIN_MAX_ATTEMPTS`/`ADMIN_LOGIN_WINDOW_MINUTES`로 조정) |
+| `SEARCH_QUOTA_EXCEEDED` | 429 | 오늘 검색 가능 횟수를 모두 사용했습니다. (캐시 미스 기준 하루 `YOUTUBE_SEARCH_DAILY_LIMIT`회, 기본 50회 — 링크 등록은 별도 쿼터라 계속 사용 가능) |
 
 ---
 
@@ -475,6 +476,56 @@ DELETE /api/tables/{tableToken}/fallback-tracks/{fallbackTrackId}
 
 ---
 
+## 검색 (Search, 관리자 전용 — `Authorization: Bearer <token>` 필요)
+
+노년층 등 링크 붙여넣기가 어려운 손님을 대신해, 관리자가 유튜브 창을 오가지 않고
+앱 안에서 바로 노래를 검색해 큐에 추가할 수 있게 하는 API. 검색 결과에서 고른
+`videoId`는 그대로 `POST /queue-items`의 `link` 필드에 넣어 등록한다(원본 링크와
+동일하게 `YoutubeLinkParser`가 순수 videoId도 지원).
+
+### 검색
+
+```
+GET /api/tables/{tableToken}/search?q=검색어
+```
+
+**동작**
+
+1. 검색어를 정규화(trim + 소문자 + 공백 정리)해서 캐시(`SearchQueryCache`) 조회 — 캐시
+   히트면 `search.list` 호출 없이 바로 응답
+2. 캐시 미스면 하루 검색 상한(`YOUTUBE_SEARCH_DAILY_LIMIT`, 기본 50회) 확인 후
+   `search.list`(100유닛) 호출 → 결과 videoId 전체를 `videos.list` 배치 호출(1유닛)로
+   embeddable/지역제한까지 채워서 `CachedVideo`에 저장, 검색어→videoId 목록도 캐시에 저장
+3. 이 매장의 `regionCode` 기준으로 각 결과의 `playable` 여부를 계산해서 응답에 포함
+
+**Response** `200 OK`
+
+```json
+[
+  {
+    "videoId": "dQw4w9WgXcQ",
+    "title": "Rick Astley - Never Gonna Give You Up",
+    "thumbnailUrl": "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg",
+    "channelTitle": "Rick Astley",
+    "playable": true
+  }
+]
+```
+
+`playable=false`인 결과는 이 매장에서 재생 불가(embeddable=false 또는 지역제한) —
+프론트는 이 경우 추가 버튼을 비활성화해야 함. 검색어가 빈 문자열이면 빈 배열 반환.
+
+**에러**
+
+| 상황 | code |
+|---|---|
+| tableToken이 존재하지 않음 | `TABLE_TOKEN_NOT_FOUND` |
+| Authorization 헤더가 없거나 토큰이 유효하지 않음/만료됨 | `UNAUTHORIZED_ADMIN` |
+| 캐시에 없는 검색어인데 오늘 검색 상한을 다 씀 | `SEARCH_QUOTA_EXCEEDED` |
+| YouTube API 호출 실패 | `YOUTUBE_API_ERROR` |
+
+---
+
 ## 데이터 모델 참고
 
 ### QueueItemStatus
@@ -495,7 +546,6 @@ DELETE /api/tables/{tableToken}/fallback-tracks/{fallbackTrackId}
 
 ## 아직 없는 것 (다음 주차 예정)
 
-- `GET /api/tables/{tableToken}/search?q=...` — YouTube 검색 (2주차, 하루 100회 쿼터 제약으로 후순위)
 - WebSocket `/ws` — `now-playing` 폴링을 대체할 실시간 push (3주차)
 - 단골손님 개인 플레이리스트 저장/재생 (언급만 됨, 스키마 미정 — 폴백 재생목록과는
   별개 개념으로 나중에 설계)
