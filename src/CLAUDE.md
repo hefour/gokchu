@@ -62,6 +62,43 @@
 - 개인 식별 기반 제한(로그인, 기기 지문 등) — 이 프로젝트 스코프 아님, 테이블 토큰으로 충분
 - `relatedToVideoId` 기반 추천 API 사용 — 이미 폐지된 기능
 
+## 진행 상황 (2026-09-22 기준)
+
+### 이번 세션 — 관리자 전용 검색 API (프로토타입)
+- 배경: 실사용 중 발견된 문제 — 나이 있는 손님은 유튜브 링크 붙여넣기가 어려워서, 스태프가
+  직접 유튜브 창에서 찾아 링크를 복사해 대신 등록해주고 있었음. 이 워크플로우(찾기→복사→
+  붙여넣기)를 앱 안에서 검색 한 번으로 끝내기로 함. 손님용 검색은 아직 안 함(관리자 전용으로
+  먼저 검증).
+- `com.gokchu.gokchu.search` 패키지 신설:
+  - `SearchQueryCache` — 정규화된 검색어(trim+소문자+공백정리) → videoId 목록(순위 순, `@OrderColumn`)
+    캐시. `V4__search_cache.sql`로 `search_query_cache`/`search_query_cache_video_ids` 테이블 추가.
+  - `SearchQuotaLimiter` — `search.list` 실제 호출(캐시 미스) 횟수를 하루 단위(UTC 자정 기준)로
+    세는 인메모리 카운터, 기본 상한 50회(`YOUTUBE_SEARCH_DAILY_LIMIT`). `AdminLoginRateLimiter`와
+    같은 패턴(주입 가능한 `Clock`으로 테스트).
+  - `SearchService.search(tableToken, query)` — 캐시 히트면 API 호출 없이 바로 반환. 미스면
+    쿼터 확인 → `search.list`(100유닛, maxResults=25) 호출 → 결과 videoId 전체를 `videos.list`
+    배치 호출(콤마로 묶어도 1유닛)로 embeddable/지역제한까지 채워 `CachedVideo`에 저장 →
+    검색어 캐시도 저장. 매장 `regionCode` 기준으로 각 결과의 `playable` 계산.
+  - `SearchController`: `GET /api/tables/{tableToken}/search?q=...`, 관리자 인증 필요
+    (`WebConfig`에 `/api/tables/*/search` 추가).
+  - `ErrorCode.SEARCH_QUOTA_EXCEEDED`(429) 신규 — 쿼터 소진 시 프론트가 "링크로 추가해달라"로
+    안내.
+- **리팩터링**: `videos.list` 응답 → `CachedVideo` 매핑 로직이 `VideoValidationService`에만
+  있었는데 검색 경로도 똑같이 필요해서 `CachedVideo.fromApiItem(VideoItem)` 정적 팩토리로
+  뽑아내 양쪽이 공유하게 함 (`VideoValidationService`는 이제 이 팩토리를 호출만 함).
+  `YoutubeApiClient.fetchVideoDetails`도 리스트를 받는 오버로드 추가(콤마 조인, 여전히 1유닛).
+- 검색으로 고른 `videoId`는 새 등록 API를 안 만들고 **기존** `POST /queue-items`에
+  `link` 필드로 그대로 넣음 — `YoutubeLinkParser`가 순수 videoId(11자)도 이미 지원해서
+  가능. YAGNI: 검색 전용 등록 엔드포인트 안 만듦.
+- 테스트: `SearchServiceTest`(캐시 히트/미스/쿼터초과/테이블없음/빈검색어 5케이스),
+  `SearchQuotaLimiterTest`(3케이스). `./gradlew test`로 search/video/queue/fallback/volume/admin
+  패키지 71개 테스트 전체 통과 확인(`GokchuApplicationTests`는 기존과 동일하게 로컬 Docker
+  Postgres 없어서 미실행).
+- **아직 안 한 것**: 손님용(`/guest`) 검색 UI(관리자 전용으로 먼저 실사용 데이터 보고 결정),
+  캐시 TTL(지금은 한 번 캐시되면 영구 — 검색 결과가 시간 지나 바뀌어도 안 갱신됨, 당장은
+  허용 가능한 트레이드오프), 쿼터 리셋이 서버 로컬시각(UTC) 기준이라 실제 유튜브 쿼터 리셋
+  시각(태평양시)과 약간 어긋남(안전 마진 있어서 지금은 무시 가능).
+
 ## 진행 상황 (2026-09-21 기준)
 
 ### 이번 세션 — 폴백 트랙 스킵 API 추가
