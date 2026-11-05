@@ -29,11 +29,27 @@ dependencies {
 	annotationProcessor 'org.projectlombok:lombok'
 	testImplementation 'org.springframework.boot:spring-boot-starter-data-jpa-test'
 	testImplementation 'org.springframework.boot:spring-boot-starter-webmvc-test'
+	testImplementation 'org.springframework.boot:spring-boot-testcontainers'
+	testImplementation 'org.testcontainers:testcontainers-junit-jupiter'
+	testImplementation 'org.testcontainers:testcontainers-postgresql'
 	testCompileOnly 'org.projectlombok:lombok'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 	testAnnotationProcessor 'org.projectlombok:lombok'
 }
 
 tasks.named('test') {
-	useJUnitPlatform()
+	useJUnitPlatform {
+		// 동시성 실험은 수 분 걸리므로 기본 test에서는 빼고 concurrencyExperiment 태스크로만 실행
+		excludeTags 'experiment'
+	}
+}
+
+tasks.register('concurrencyExperiment', Test) {
+	description = '재생 완료/스킵 동시성 실험 (Testcontainers Postgres)'
+	group = 'verification'
+	testClassesDirs = sourceSets.test.output.classesDirs
+	classpath = sourceSets.test.runtimeClasspath
+	useJUnitPlatform { includeTags 'experiment' }
+	testLogging { showStandardStreams = true }
+	outputs.upToDateWhen { false }
 }
