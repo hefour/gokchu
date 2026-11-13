@@ -6,8 +6,8 @@
 >
 > 적용 상태: 아래 6장의 "API 변경"과 complete/skip의 조건부 UPDATE는 `fix/now-playing-idempotent`
 > 브랜치에서 운영 코드(`QueueService`)에 적용했다. 이 문서에서 말하는 "현재 코드"는 실험 당시(9ddaa81)의
-> 코드이고, 실험의 baseline은 그 로직을 `BaselineTransitions`에 옮겨 둔 것이다. 폴백 곡과 `addToQueue`의
-> 경쟁은 아직 남아 있다.
+> 코드이고, 실험의 baseline은 그 로직을 `BaselineTransitions`에 옮겨 둔 것이다. 폴백 곡도 같은 원리로
+> 적용했다(8장). `addToQueue`의 경쟁은 아직 남아 있다.
 
 - 브랜치: `experiment/concurrency`
 - 실험 코드: `src/test/java/com/gokchu/gokchu/queue/experiment/`
@@ -239,7 +239,7 @@ SELECT ... FROM queue_items WHERE id = :A FOR UPDATE   -- 락을 잡은 뒤에 s
 3. 문제의 진짜 원인은 "complete가 대상을 모른다"는 것이었다(3-1). ①은 그 원인을 "대상이 이 상태일
    때만 바꾼다"는 한 문장으로 직접 표현한다.
 
-**적용 시 함께 바꿔야 할 것 (API 변경은 적용 완료, 폴백 곡과 남는 경쟁은 미적용)**
+**적용 시 함께 바꿔야 할 것 (API 변경과 폴백 곡은 적용 완료, 남는 경쟁은 미적용)**
 
 - **API 변경**: `POST /now-playing/complete`가 끝난 곡의 `queueItemId`를 받아야 한다. TV는 이미
   `now-playing` 응답으로 `queueItemId`를 알고 있으니, ENDED 때 그 값을 보내면 된다. 2026-09-14에
@@ -247,7 +247,7 @@ SELECT ... FROM queue_items WHERE id = :A FOR UPDATE   -- 락을 잡은 뒤에 s
   원인이었음을 확인했다.
 - **폴백 곡**: 폴백은 `queue_items`가 아니라 `stores.current_fallback_video_id`로 상태를 관리한다.
   같은 원리로 `UPDATE stores ... WHERE id=? AND current_fallback_video_id = :끝난곡`이 필요하다.
-  이번 실험 범위 밖이다.
+  이번 실험 범위 밖이었고, 8장에서 적용했다.
 - **남는 경쟁**: `addToQueue`의 "재생중인 곡이 없으면 바로 재생"도 같은 check-then-act 구조다.
   DB 차원에서 "매장당 PLAYING 1개"를 강제하려면 부분 유니크 인덱스(`... WHERE status='PLAYING'`)가
   필요하다. 마이그레이션이 필요한 변경이라 따로 결정해야 한다.
@@ -279,3 +279,41 @@ SELECT ... FROM queue_items WHERE id = :A FOR UPDATE   -- 락을 잡은 뒤에 s
   운영 코드는 **모든 시행에서 complete가 이기고 skip이 전부 409**를 받았다(합계 = N/2×100). 운영 코드의 skip은
   매장 소유 확인용 `findById`를 먼저 한 번 더 하므로 조건부 UPDATE에 늦게 도착하기 때문이다. 결과(곡 하나만
   넘어감)는 같고, "TV가 끝났다고 했으면 관리자 스킵은 이미 끝난 곡"이라는 응답도 의미상 맞다.
+
+---
+
+## 8. 폴백 곡 적용 (2026-11-13)
+
+폴백은 `queue_items`에 행이 없고 `stores.current_fallback_video_id` 하나로 "지금 재생중인 폴백"을 관리한다.
+수정 전에는 신청곡과 같은 문제가 있었다. 폴백 종료 통보가 "어떤 폴백이 끝났는지"를 말하지 않아서, 같은
+통보가 두 번 오거나 관리자의 폴백 스킵과 겹치면 폴백이 두 곡 넘어갔다. 관리자 폴백 스킵도 대상을 받지 않아서,
+관리자가 X를 보고 누르는 사이 Y로 바뀌면 Y가 넘어갔다.
+
+**바꾼 것**
+
+- `now-playing/complete`의 body가 `{"queueItemId": ...}` 또는 `{"fallbackVideoId": ...}` 중 하나를 받는다.
+- `now-playing/skip-fallback`이 `{"videoId": ...}`를 받는다. 이미 넘어간 폴백이면 `FALLBACK_TRACK_ALREADY_FINISHED`(409).
+- 둘 다 `UPDATE stores SET current_fallback_* = NULL WHERE id = ? AND current_fallback_video_id = ?`로
+  1행을 바꾼 요청만 다음 곡으로 넘어간다. 진 폴백 종료 통보는 아무것도 바꾸지 않고 현재 상태를 돌려준다.
+- 폴백 스킵 후 대기중인 신청곡이 있으면 그걸 재생한다. 수정 전에는 대기곡이 있어도 다른 폴백을 골랐다.
+
+**영속성 컨텍스트 처리가 신청곡과 다르다**
+
+신청곡 전환(`transitionStatus`)은 `clearAutomatically`를 끄고 반환값으로만 분기한다. 같은 트랜잭션에서 읽어 둔
+`Store`를 뒤에서 dirty checking으로 폴백 상태를 바꾸는 데 써야 하기 때문이다. 폴백 전환(`clearFallbackIfCurrent`)은
+반대로 바꾸는 대상이 `Store` 자신이다. 미리 읽어 둔 `Store`는 UPDATE 이전 상태라서 그대로 쓰면 이미 비운 폴백을
+재생중으로 보거나, 진 요청이 낡은 폴백을 응답으로 돌려준다. 그래서 `clearAutomatically`를 켜고 UPDATE 뒤에
+`Store`를 다시 읽는다.
+
+**검증**
+
+`QueueServiceConcurrencyTest`에 실제 Postgres 테스트 3개를 추가했다.
+
+| 테스트 | 확인하는 것 |
+|---|---|
+| 같은 폴백의 종료가 두 번 옴 | 두 번째 통보가 B를 끊고 그 사이 들어온 신청곡을 틀지 않는다 |
+| 폴백 종료 N/2 + 관리자 폴백 스킵 N/2 동시 (N=20, 20회) | 매번 대기곡 하나만 PLAYING, 폴백은 비워짐 |
+| 신청곡 재생중에 폴백 종료가 옴 | 아무것도 바꾸지 않는다 |
+
+조건부 UPDATE의 `current_fallback_video_id = ?` 조건을 빼고(수정 전처럼 무조건 비우게) 돌리면 세 테스트가
+모두 실패하는 것을 확인했다(동시 테스트는 첫 시행에서 PLAYING이 여러 곡). 테스트가 실제로 이 경쟁을 잡는다는 뜻이다.

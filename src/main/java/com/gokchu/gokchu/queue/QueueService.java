@@ -8,6 +8,7 @@ import com.gokchu.gokchu.queue.dto.AddQueueItemRequest;
 import com.gokchu.gokchu.queue.dto.NowPlayingResponse;
 import com.gokchu.gokchu.queue.dto.QueueItemResponse;
 import com.gokchu.gokchu.store.Store;
+import com.gokchu.gokchu.store.StoreRepository;
 import com.gokchu.gokchu.tabletoken.TableToken;
 import com.gokchu.gokchu.tabletoken.TableTokenRepository;
 import com.gokchu.gokchu.video.CachedVideo;
@@ -31,6 +32,7 @@ public class QueueService {
     private final TableTokenRepository tableTokenRepository;
     private final QueueItemRepository queueItemRepository;
     private final FallbackTrackRepository fallbackTrackRepository;
+    private final StoreRepository storeRepository;
     private final VideoValidationService videoValidationService;
 
     @Transactional
@@ -93,22 +95,35 @@ public class QueueService {
     }
 
     /**
-     * TV가 "이 곡이 끝났다"고 알리면 다음으로 넘어간다. 대기중인 신청곡이 있으면 그걸 재생하고,
-     * 없으면 폴백으로(또는 폴백 안에서 다음 곡으로) 넘어간다.
+     * TV가 "이 신청곡이 끝났다"고 알리면 다음으로 넘어간다. 대기중인 신청곡이 있으면 그걸 재생하고,
+     * 없으면 폴백으로 넘어간다.
      *
-     * <p>끝난 곡의 id를 받아 "그 곡이 아직 PLAYING일 때만" DONE으로 바꾼다. 같은 곡의 complete가
-     * 중복으로 오거나 스킵과 겹쳐도 곡은 하나만 넘어간다(멱등). 이미 처리된 요청이면 아무것도 바꾸지 않고
-     * 지금 재생 상태를 돌려준다. 근거는 docs/concurrency-experiment.md.
-     *
-     * @param finishedQueueItemId 끝난 신청곡 id. 끝난 게 폴백 트랙이면 null
+     * <p>"그 곡이 아직 PLAYING일 때만" DONE으로 바꾼다. 같은 곡의 complete가 중복으로 오거나 스킵과
+     * 겹쳐도 곡은 하나만 넘어간다(멱등). 이미 처리된 요청이면 아무것도 바꾸지 않고 지금 재생 상태를
+     * 돌려준다. 근거는 docs/concurrency-experiment.md.
      */
     @Transactional
-    public Optional<NowPlayingResponse> completeNowPlaying(UUID tableToken, Long finishedQueueItemId) {
+    public Optional<NowPlayingResponse> completeQueueItem(UUID tableToken, Long finishedQueueItemId) {
         Store store = findTable(tableToken).getStore();
-        if (finishedQueueItemId != null) {
-            return completeQueueItem(store, finishedQueueItemId);
+        if (!transition(store, finishedQueueItemId, QueueItemStatus.PLAYING, QueueItemStatus.DONE)) {
+            return currentNowPlaying(store);
         }
-        return completeFallback(store);
+        return promoteNextOrStartFallback(store, null);
+    }
+
+    /**
+     * TV가 "이 폴백 트랙이 끝났다"고 알리면 다음으로 넘어간다. 신청곡과 같은 원리로, 그 트랙이 아직
+     * 매장의 현재 폴백일 때만 넘긴다. 이미 넘어갔으면(중복 통보, 관리자 폴백 스킵과 겹침) 아무것도
+     * 바꾸지 않고 지금 재생 상태를 돌려준다.
+     */
+    @Transactional
+    public Optional<NowPlayingResponse> completeFallback(UUID tableToken, String finishedVideoId) {
+        Long storeId = findTable(tableToken).getStore().getId();
+        Optional<Store> finished = finishFallbackIfCurrent(storeId, finishedVideoId);
+        if (finished.isEmpty()) {
+            return currentNowPlaying(findStore(storeId));
+        }
+        return promoteNextOrStartFallback(finished.get(), finishedVideoId);
     }
 
     /**
@@ -130,21 +145,21 @@ public class QueueService {
     }
 
     /**
-     * 관리자가 현재 재생중인 폴백 트랙을 수동으로 건너뛴다. 신청곡이 재생중일 때는 대상이 없으므로
-     * (관리자는 그 경우 {@link #skip}을 쓴다) 예외를 던진다.
+     * 관리자가 보고 있던 폴백 트랙을 건너뛴다. 대기중인 신청곡이 있으면 그걸 재생하고, 없으면 다른 폴백으로
+     * 넘어간다. 그 트랙이 아직 현재 폴백일 때만 넘기므로, 그 사이 곡이 끝나 다른 곡으로 바뀌었으면 새 곡을
+     * 건너뛰지 않고 예외를 던진다.
      */
     @Transactional
-    public Optional<NowPlayingResponse> skipFallback(UUID tableToken) {
-        TableToken table = findTable(tableToken);
-        Store store = table.getStore();
-
-        if (!store.hasFallbackPlaying()) {
-            throw new GokchuException(ErrorCode.FALLBACK_NOT_PLAYING);
+    public Optional<NowPlayingResponse> skipFallback(UUID tableToken, String videoId) {
+        Long storeId = findTable(tableToken).getStore().getId();
+        Optional<Store> finished = finishFallbackIfCurrent(storeId, videoId);
+        if (finished.isPresent()) {
+            return promoteNextOrStartFallback(finished.get(), videoId);
         }
-
-        String justFinishedFallbackVideoId = store.getCurrentFallbackVideoId();
-        store.clearFallback();
-        return startFallback(store, justFinishedFallbackVideoId);
+        if (findStore(storeId).hasFallbackPlaying()) {
+            throw new GokchuException(ErrorCode.FALLBACK_TRACK_ALREADY_FINISHED);
+        }
+        throw new GokchuException(ErrorCode.FALLBACK_NOT_PLAYING);
     }
 
     private Optional<NowPlayingResponse> currentNowPlaying(Store store) {
@@ -158,24 +173,22 @@ public class QueueService {
         return Optional.empty();
     }
 
-    private Optional<NowPlayingResponse> completeQueueItem(Store store, Long finishedQueueItemId) {
-        if (!transition(store, finishedQueueItemId, QueueItemStatus.PLAYING, QueueItemStatus.DONE)) {
-            return currentNowPlaying(store);
+    /**
+     * 매장의 현재 폴백이 {@code videoId}일 때만 비운다(조건부 UPDATE). 이 UPDATE는 영속성 컨텍스트를
+     * 비우므로, 이후 판단과 변경은 DB에서 다시 읽은 Store로 한다.
+     *
+     * @return 비웠으면 다시 읽은 Store, 이미 다른 상태였으면 empty
+     */
+    private Optional<Store> finishFallbackIfCurrent(Long storeId, String videoId) {
+        if (storeRepository.clearFallbackIfCurrent(storeId, videoId) == 0) {
+            return Optional.empty();
         }
-        return promoteNextOrStartFallback(store, null);
+        return Optional.of(findStore(storeId));
     }
 
-    /**
-     * 폴백 트랙 종료. 그 사이 신청곡이 재생을 시작했다면 TV가 낡은 상태로 보낸 요청이므로 아무것도 바꾸지
-     * 않는다. 같은 폴백 종료가 동시에 두 번 오는 경쟁은 아직 막지 않는다(docs/concurrency-experiment.md 6장).
-     */
-    private Optional<NowPlayingResponse> completeFallback(Store store) {
-        if (findPlayingQueueItem(store.getId()).isPresent()) {
-            return currentNowPlaying(store);
-        }
-        String justFinishedFallbackVideoId = store.getCurrentFallbackVideoId();
-        store.clearFallback();
-        return promoteNextOrStartFallback(store, justFinishedFallbackVideoId);
+    private Store findStore(Long storeId) {
+        return storeRepository.findById(storeId)
+                .orElseThrow(() -> new IllegalStateException("매장이 없습니다. storeId=" + storeId));
     }
 
     private Optional<NowPlayingResponse> promoteNextOrStartFallback(Store store, String excludeFallbackVideoId) {

@@ -26,7 +26,7 @@ class ProductionTransitions implements NowPlayingTransitions {
 
     @Override
     public Optional<NowPlayingResponse> complete(UUID tableToken, Long finishedQueueItemId) {
-        return queueService.completeNowPlaying(tableToken, finishedQueueItemId);
+        return queueService.completeQueueItem(tableToken, finishedQueueItemId);
     }
 
     @Override

@@ -9,6 +9,7 @@ import com.gokchu.gokchu.queue.dto.NowPlayingResponse;
 import com.gokchu.gokchu.queue.dto.NowPlayingSource;
 import com.gokchu.gokchu.queue.dto.QueueItemResponse;
 import com.gokchu.gokchu.store.Store;
+import com.gokchu.gokchu.store.StoreRepository;
 import com.gokchu.gokchu.tabletoken.TableToken;
 import com.gokchu.gokchu.tabletoken.TableTokenRepository;
 import com.gokchu.gokchu.video.CachedVideo;
@@ -54,6 +55,9 @@ class QueueServiceTest {
     private FallbackTrackRepository fallbackTrackRepository;
 
     @Mock
+    private StoreRepository storeRepository;
+
+    @Mock
     private VideoValidationService videoValidationService;
 
     @InjectMocks
@@ -78,6 +82,16 @@ class QueueServiceTest {
         when(queueItemRepository.findFirstByStoreIdAndStatusOrderByRequestedAtAsc(STORE_ID, QueueItemStatus.WAITING))
                 .thenReturn(Optional.empty());
         when(fallbackTrackRepository.findByStoreId(STORE_ID)).thenReturn(List.of());
+        when(storeRepository.findById(STORE_ID)).thenReturn(Optional.of(store));
+        // 실제 조건부 UPDATE처럼, 현재 폴백이 그 videoId일 때만 비우고 1을 반환한다
+        when(storeRepository.clearFallbackIfCurrent(eq(STORE_ID), anyString())).thenAnswer(invocation -> {
+            String videoId = invocation.getArgument(1);
+            if (!videoId.equals(store.getCurrentFallbackVideoId())) {
+                return 0;
+            }
+            store.clearFallback();
+            return 1;
+        });
     }
 
     private QueueItem queueItem(long id, QueueItemStatus status) {
@@ -208,7 +222,7 @@ class QueueServiceTest {
         when(queueItemRepository.findFirstByStoreIdAndStatusOrderByRequestedAtAsc(STORE_ID, QueueItemStatus.WAITING))
                 .thenReturn(Optional.of(next));
 
-        Optional<NowPlayingResponse> response = queueService.completeNowPlaying(tableToken, 1L);
+        Optional<NowPlayingResponse> response = queueService.completeQueueItem(tableToken, 1L);
 
         verify(queueItemRepository).transitionStatus(1L, STORE_ID, QueueItemStatus.PLAYING, QueueItemStatus.DONE);
         verify(queueItemRepository).transitionStatus(2L, STORE_ID, QueueItemStatus.WAITING, QueueItemStatus.PLAYING);
@@ -222,7 +236,7 @@ class QueueServiceTest {
         stubTransition(1L, QueueItemStatus.PLAYING, QueueItemStatus.DONE);
         when(fallbackTrackRepository.findByStoreId(STORE_ID)).thenReturn(List.of(fallbackTrack(1L, "fb1")));
 
-        Optional<NowPlayingResponse> response = queueService.completeNowPlaying(tableToken, 1L);
+        Optional<NowPlayingResponse> response = queueService.completeQueueItem(tableToken, 1L);
 
         assertThat(response).isPresent();
         assertThat(response.get().source()).isEqualTo(NowPlayingSource.FALLBACK);
@@ -233,7 +247,7 @@ class QueueServiceTest {
     void completeNowPlaying_대기곡도_폴백트랙도_없으면_빈값을_반환한다() {
         stubTransition(1L, QueueItemStatus.PLAYING, QueueItemStatus.DONE);
 
-        Optional<NowPlayingResponse> response = queueService.completeNowPlaying(tableToken, 1L);
+        Optional<NowPlayingResponse> response = queueService.completeQueueItem(tableToken, 1L);
 
         assertThat(response).isEmpty();
     }
@@ -245,7 +259,7 @@ class QueueServiceTest {
         when(queueItemRepository.findFirstByStoreIdAndStatusOrderByRequestedAtAsc(STORE_ID, QueueItemStatus.PLAYING))
                 .thenReturn(Optional.of(nowPlaying));
 
-        Optional<NowPlayingResponse> response = queueService.completeNowPlaying(tableToken, 1L);
+        Optional<NowPlayingResponse> response = queueService.completeQueueItem(tableToken, 1L);
 
         verify(queueItemRepository, never()).transitionStatus(
                 anyLong(), eq(STORE_ID), eq(QueueItemStatus.WAITING), eq(QueueItemStatus.PLAYING));
@@ -263,7 +277,7 @@ class QueueServiceTest {
         when(queueItemRepository.findFirstByStoreIdAndStatusOrderByRequestedAtAsc(STORE_ID, QueueItemStatus.WAITING))
                 .thenReturn(Optional.of(skippedMeanwhile), Optional.of(next));
 
-        Optional<NowPlayingResponse> response = queueService.completeNowPlaying(tableToken, 1L);
+        Optional<NowPlayingResponse> response = queueService.completeQueueItem(tableToken, 1L);
 
         assertThat(response).isPresent();
         assertThat(response.get().queueItemId()).isEqualTo(3L);
@@ -277,7 +291,7 @@ class QueueServiceTest {
         when(queueItemRepository.findFirstByStoreIdAndStatusOrderByRequestedAtAsc(STORE_ID, QueueItemStatus.WAITING))
                 .thenReturn(Optional.of(waiting));
 
-        Optional<NowPlayingResponse> response = queueService.completeNowPlaying(tableToken, null);
+        Optional<NowPlayingResponse> response = queueService.completeFallback(tableToken, "fb1");
 
         assertThat(store.hasFallbackPlaying()).isFalse();
         assertThat(response).isPresent();
@@ -292,7 +306,7 @@ class QueueServiceTest {
         store.startFallback(finished);
         when(fallbackTrackRepository.findByStoreId(STORE_ID)).thenReturn(List.of(finished, other));
 
-        Optional<NowPlayingResponse> response = queueService.completeNowPlaying(tableToken, null);
+        Optional<NowPlayingResponse> response = queueService.completeFallback(tableToken, "fb1");
 
         assertThat(response).isPresent();
         assertThat(response.get().source()).isEqualTo(NowPlayingSource.FALLBACK);
@@ -300,12 +314,27 @@ class QueueServiceTest {
     }
 
     @Test
-    void completeNowPlaying_폴백종료가_왔는데_신청곡이_재생중이면_아무것도_바꾸지_않는다() {
+    void completeFallback_이미_다른_폴백으로_넘어갔으면_아무것도_바꾸지_않고_현재_폴백을_반환한다() {
+        // fb1 종료가 이미 처리돼 fb2가 재생중인데, fb1 종료 통보가 한 번 더 온 상황
+        FallbackTrack nowPlaying = fallbackTrack(2L, "fb2");
+        store.startFallback(nowPlaying);
+        when(fallbackTrackRepository.findByStoreId(STORE_ID)).thenReturn(List.of(fallbackTrack(1L, "fb1"), nowPlaying));
+
+        Optional<NowPlayingResponse> response = queueService.completeFallback(tableToken, "fb1");
+
+        verify(fallbackTrackRepository, never()).findByStoreId(any());
+        assertThat(store.getCurrentFallbackVideoId()).isEqualTo("fb2");
+        assertThat(response).isPresent();
+        assertThat(response.get().videoId()).isEqualTo("fb2");
+    }
+
+    @Test
+    void completeFallback_폴백종료가_왔는데_신청곡이_재생중이면_아무것도_바꾸지_않는다() {
         QueueItem playing = queueItem(1L, QueueItemStatus.PLAYING);
         when(queueItemRepository.findFirstByStoreIdAndStatusOrderByRequestedAtAsc(STORE_ID, QueueItemStatus.PLAYING))
                 .thenReturn(Optional.of(playing));
 
-        Optional<NowPlayingResponse> response = queueService.completeNowPlaying(tableToken, null);
+        Optional<NowPlayingResponse> response = queueService.completeFallback(tableToken, "fb1");
 
         verify(queueItemRepository, never()).transitionStatus(any(), any(), any(), any());
         assertThat(response).isPresent();
@@ -389,11 +418,27 @@ class QueueServiceTest {
         store.startFallback(current);
         when(fallbackTrackRepository.findByStoreId(STORE_ID)).thenReturn(List.of(current, other));
 
-        Optional<NowPlayingResponse> response = queueService.skipFallback(tableToken);
+        Optional<NowPlayingResponse> response = queueService.skipFallback(tableToken, "fb1");
 
         assertThat(response).isPresent();
         assertThat(response.get().source()).isEqualTo(NowPlayingSource.FALLBACK);
         assertThat(response.get().videoId()).isEqualTo("fb2");
+    }
+
+    @Test
+    void skipFallback_대기곡이_있으면_다른_폴백_대신_대기곡을_재생한다() {
+        store.startFallback(fallbackTrack(1L, "fb1"));
+        QueueItem waiting = queueItem(2L, QueueItemStatus.WAITING);
+        stubTransition(2L, QueueItemStatus.WAITING, QueueItemStatus.PLAYING);
+        when(queueItemRepository.findFirstByStoreIdAndStatusOrderByRequestedAtAsc(STORE_ID, QueueItemStatus.WAITING))
+                .thenReturn(Optional.of(waiting));
+
+        Optional<NowPlayingResponse> response = queueService.skipFallback(tableToken, "fb1");
+
+        assertThat(store.hasFallbackPlaying()).isFalse();
+        assertThat(response).isPresent();
+        assertThat(response.get().source()).isEqualTo(NowPlayingSource.QUEUE);
+        assertThat(response.get().queueItemId()).isEqualTo(2L);
     }
 
     @Test
@@ -402,15 +447,26 @@ class QueueServiceTest {
         store.startFallback(onlyTrack);
         when(fallbackTrackRepository.findByStoreId(STORE_ID)).thenReturn(List.of(onlyTrack));
 
-        Optional<NowPlayingResponse> response = queueService.skipFallback(tableToken);
+        Optional<NowPlayingResponse> response = queueService.skipFallback(tableToken, "fb1");
 
         assertThat(response).isPresent();
         assertThat(response.get().videoId()).isEqualTo("fb1");
     }
 
     @Test
+    void skipFallback_그사이_다른_폴백으로_넘어갔으면_새_곡을_건너뛰지_않고_예외가_발생한다() {
+        store.startFallback(fallbackTrack(2L, "fb2"));
+
+        assertThatThrownBy(() -> queueService.skipFallback(tableToken, "fb1"))
+                .isInstanceOf(GokchuException.class)
+                .extracting(e -> ((GokchuException) e).getErrorCode())
+                .isEqualTo(ErrorCode.FALLBACK_TRACK_ALREADY_FINISHED);
+        assertThat(store.getCurrentFallbackVideoId()).isEqualTo("fb2");
+    }
+
+    @Test
     void skipFallback_재생중인_폴백이_없으면_예외가_발생한다() {
-        assertThatThrownBy(() -> queueService.skipFallback(tableToken))
+        assertThatThrownBy(() -> queueService.skipFallback(tableToken, "fb1"))
                 .isInstanceOf(GokchuException.class)
                 .extracting(e -> ((GokchuException) e).getErrorCode())
                 .isEqualTo(ErrorCode.FALLBACK_NOT_PLAYING);
@@ -421,7 +477,7 @@ class QueueServiceTest {
         when(queueItemRepository.findFirstByStoreIdAndStatusOrderByRequestedAtAsc(STORE_ID, QueueItemStatus.PLAYING))
                 .thenReturn(Optional.of(queueItem(1L, QueueItemStatus.PLAYING)));
 
-        assertThatThrownBy(() -> queueService.skipFallback(tableToken))
+        assertThatThrownBy(() -> queueService.skipFallback(tableToken, "fb1"))
                 .isInstanceOf(GokchuException.class)
                 .extracting(e -> ((GokchuException) e).getErrorCode())
                 .isEqualTo(ErrorCode.FALLBACK_NOT_PLAYING);
