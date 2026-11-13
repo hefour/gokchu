@@ -26,6 +26,8 @@ import java.util.concurrent.ThreadLocalRandom;
 @RequiredArgsConstructor
 public class QueueService {
 
+    private static final int MAX_PROMOTE_ATTEMPTS = 10;
+
     private final TableTokenRepository tableTokenRepository;
     private final QueueItemRepository queueItemRepository;
     private final FallbackTrackRepository fallbackTrackRepository;
@@ -91,54 +93,40 @@ public class QueueService {
     }
 
     /**
-     * 현재 재생중이던 것(신청곡 또는 폴백)이 끝났음을 통보받아 다음으로 넘어간다.
-     * 대기중인 신청곡이 있으면 그걸 재생하고, 없으면 폴백으로(또는 폴백 안에서 다음 곡으로) 넘어간다.
+     * TV가 "이 곡이 끝났다"고 알리면 다음으로 넘어간다. 대기중인 신청곡이 있으면 그걸 재생하고,
+     * 없으면 폴백으로(또는 폴백 안에서 다음 곡으로) 넘어간다.
+     *
+     * <p>끝난 곡의 id를 받아 "그 곡이 아직 PLAYING일 때만" DONE으로 바꾼다. 같은 곡의 complete가
+     * 중복으로 오거나 스킵과 겹쳐도 곡은 하나만 넘어간다(멱등). 이미 처리된 요청이면 아무것도 바꾸지 않고
+     * 지금 재생 상태를 돌려준다. 근거는 docs/concurrency-experiment.md.
+     *
+     * @param finishedQueueItemId 끝난 신청곡 id. 끝난 게 폴백 트랙이면 null
      */
     @Transactional
-    public Optional<NowPlayingResponse> completeNowPlaying(UUID tableToken) {
-        TableToken table = findTable(tableToken);
-        Store store = table.getStore();
-        Long storeId = store.getId();
-
-        String justFinishedFallbackVideoId = null;
-        Optional<QueueItem> playing = findPlayingQueueItem(storeId);
-        if (playing.isPresent()) {
-            playing.get().finish();
-        } else if (store.hasFallbackPlaying()) {
-            justFinishedFallbackVideoId = store.getCurrentFallbackVideoId();
-            store.clearFallback();
+    public Optional<NowPlayingResponse> completeNowPlaying(UUID tableToken, Long finishedQueueItemId) {
+        Store store = findTable(tableToken).getStore();
+        if (finishedQueueItemId != null) {
+            return completeQueueItem(store, finishedQueueItemId);
         }
-
-        Optional<NowPlayingResponse> promoted = promoteNextWaiting(storeId);
-        if (promoted.isPresent()) {
-            return promoted;
-        }
-        return startFallback(store, justFinishedFallbackVideoId);
+        return completeFallback(store);
     }
 
+    /**
+     * 신청곡을 SKIPPED로 바꾸고, 재생중이던 곡이었으면 다음 곡으로 넘어간다. 상태 확인과 변경을 조건부
+     * UPDATE 한 문장으로 해서, 같은 곡을 두고 complete와 겹쳐도 다음 곡은 한 번만 올라간다.
+     */
     @Transactional
     public Optional<NowPlayingResponse> skip(UUID tableToken, Long queueItemId) {
-        TableToken table = findTable(tableToken);
-        Store store = table.getStore();
-        Long storeId = store.getId();
-        QueueItem item = findQueueItem(storeId, queueItemId);
+        Store store = findTable(tableToken).getStore();
+        findQueueItem(store.getId(), queueItemId);
 
-        if (item.getStatus() == QueueItemStatus.DONE || item.getStatus() == QueueItemStatus.SKIPPED) {
-            throw new GokchuException(ErrorCode.QUEUE_ITEM_ALREADY_FINISHED);
+        if (transition(store, queueItemId, QueueItemStatus.PLAYING, QueueItemStatus.SKIPPED)) {
+            return promoteNextOrStartFallback(store, null);
         }
-
-        boolean wasPlaying = item.getStatus() == QueueItemStatus.PLAYING;
-        item.skip();
-
-        if (!wasPlaying) {
+        if (transition(store, queueItemId, QueueItemStatus.WAITING, QueueItemStatus.SKIPPED)) {
             return currentNowPlaying(store);
         }
-
-        Optional<NowPlayingResponse> promoted = promoteNextWaiting(storeId);
-        if (promoted.isPresent()) {
-            return promoted;
-        }
-        return startFallback(store, null);
+        throw new GokchuException(ErrorCode.QUEUE_ITEM_ALREADY_FINISHED);
     }
 
     /**
@@ -170,12 +158,56 @@ public class QueueService {
         return Optional.empty();
     }
 
-    private Optional<NowPlayingResponse> promoteNextWaiting(Long storeId) {
-        return queueItemRepository.findFirstByStoreIdAndStatusOrderByRequestedAtAsc(storeId, QueueItemStatus.WAITING)
-                .map(next -> {
-                    next.play();
-                    return NowPlayingResponse.ofQueueItem(next);
-                });
+    private Optional<NowPlayingResponse> completeQueueItem(Store store, Long finishedQueueItemId) {
+        if (!transition(store, finishedQueueItemId, QueueItemStatus.PLAYING, QueueItemStatus.DONE)) {
+            return currentNowPlaying(store);
+        }
+        return promoteNextOrStartFallback(store, null);
+    }
+
+    /**
+     * 폴백 트랙 종료. 그 사이 신청곡이 재생을 시작했다면 TV가 낡은 상태로 보낸 요청이므로 아무것도 바꾸지
+     * 않는다. 같은 폴백 종료가 동시에 두 번 오는 경쟁은 아직 막지 않는다(docs/concurrency-experiment.md 6장).
+     */
+    private Optional<NowPlayingResponse> completeFallback(Store store) {
+        if (findPlayingQueueItem(store.getId()).isPresent()) {
+            return currentNowPlaying(store);
+        }
+        String justFinishedFallbackVideoId = store.getCurrentFallbackVideoId();
+        store.clearFallback();
+        return promoteNextOrStartFallback(store, justFinishedFallbackVideoId);
+    }
+
+    private Optional<NowPlayingResponse> promoteNextOrStartFallback(Store store, String excludeFallbackVideoId) {
+        Optional<NowPlayingResponse> promoted = promoteNextWaiting(store);
+        if (promoted.isPresent()) {
+            return promoted;
+        }
+        return startFallback(store, excludeFallbackVideoId);
+    }
+
+    /**
+     * 가장 오래된 WAITING을 PLAYING으로 올린다. 조회와 승격 사이에 그 곡이 스킵되면 승격이 0행이 되므로
+     * 다음 WAITING으로 다시 시도한다. 실패한 곡은 이미 WAITING이 아니므로 정상이라면 몇 번 안에 끝난다.
+     */
+    private Optional<NowPlayingResponse> promoteNextWaiting(Store store) {
+        for (int attempt = 0; attempt < MAX_PROMOTE_ATTEMPTS; attempt++) {
+            Optional<QueueItem> next = queueItemRepository
+                    .findFirstByStoreIdAndStatusOrderByRequestedAtAsc(store.getId(), QueueItemStatus.WAITING);
+            if (next.isEmpty()) {
+                return Optional.empty();
+            }
+            if (transition(store, next.get().getId(), QueueItemStatus.WAITING, QueueItemStatus.PLAYING)) {
+                return Optional.of(NowPlayingResponse.ofQueueItem(next.get()));
+            }
+        }
+        throw new IllegalStateException(
+                "다음 곡 승격이 " + MAX_PROMOTE_ATTEMPTS + "번 연속 실패했습니다. storeId=" + store.getId());
+    }
+
+    /** 조건부 UPDATE로 상태를 바꾼다. 실제로 1행을 바꿨을 때만 true. */
+    private boolean transition(Store store, Long queueItemId, QueueItemStatus from, QueueItemStatus to) {
+        return queueItemRepository.transitionStatus(queueItemId, store.getId(), from, to) == 1;
     }
 
     private Optional<NowPlayingResponse> startFallback(Store store, String excludeVideoId) {

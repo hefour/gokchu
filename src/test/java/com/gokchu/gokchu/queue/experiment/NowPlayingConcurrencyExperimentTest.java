@@ -74,6 +74,7 @@ class NowPlayingConcurrencyExperimentTest {
     @Autowired BaselineTransitions baseline;
     @Autowired ConditionalUpdateTransitions conditionalUpdate;
     @Autowired PessimisticLockTransitions pessimisticLock;
+    @Autowired ProductionTransitions production;
 
     private Long storeId;
     private Long tableTokenId;
@@ -140,7 +141,7 @@ class NowPlayingConcurrencyExperimentTest {
     }
 
     private List<NowPlayingTransitions> approaches() {
-        return List.of(baseline, conditionalUpdate, pessimisticLock);
+        return List.of(baseline, conditionalUpdate, pessimisticLock, production);
     }
 
     private ExperimentResult runTrials(NowPlayingTransitions approach, int concurrency) throws Exception {

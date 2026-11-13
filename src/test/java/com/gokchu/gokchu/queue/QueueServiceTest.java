@@ -31,8 +31,11 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -86,13 +89,13 @@ class QueueServiceTest {
                 .thumbnailUrl("thumb" + id)
                 .build();
         ReflectionTestUtils.setField(item, "id", id);
-        switch (status) {
-            case PLAYING -> item.play();
-            case DONE -> item.finish();
-            case SKIPPED -> item.skip();
-            case WAITING -> { /* default */ }
-        }
+        ReflectionTestUtils.setField(item, "status", status);
         return item;
+    }
+
+    /** 조건부 UPDATE가 {@code from -> to} 전환에 성공(1행)한 것으로 만든다. 스텁하지 않은 전환은 0행이다. */
+    private void stubTransition(long id, QueueItemStatus from, QueueItemStatus to) {
+        when(queueItemRepository.transitionStatus(id, STORE_ID, from, to)).thenReturn(1);
     }
 
     private FallbackTrack fallbackTrack(long id, String videoId) {
@@ -198,17 +201,17 @@ class QueueServiceTest {
     }
 
     @Test
-    void completeNowPlaying_대기곡이_있으면_그곡으로_전환한다() {
-        QueueItem current = queueItem(1L, QueueItemStatus.PLAYING);
+    void completeNowPlaying_끝난_신청곡이_아직_재생중이면_DONE으로_바꾸고_대기곡으로_전환한다() {
         QueueItem next = queueItem(2L, QueueItemStatus.WAITING);
-        when(queueItemRepository.findFirstByStoreIdAndStatusOrderByRequestedAtAsc(STORE_ID, QueueItemStatus.PLAYING))
-                .thenReturn(Optional.of(current));
+        stubTransition(1L, QueueItemStatus.PLAYING, QueueItemStatus.DONE);
+        stubTransition(2L, QueueItemStatus.WAITING, QueueItemStatus.PLAYING);
         when(queueItemRepository.findFirstByStoreIdAndStatusOrderByRequestedAtAsc(STORE_ID, QueueItemStatus.WAITING))
                 .thenReturn(Optional.of(next));
 
-        Optional<NowPlayingResponse> response = queueService.completeNowPlaying(tableToken);
+        Optional<NowPlayingResponse> response = queueService.completeNowPlaying(tableToken, 1L);
 
-        assertThat(current.getStatus()).isEqualTo(QueueItemStatus.DONE);
+        verify(queueItemRepository).transitionStatus(1L, STORE_ID, QueueItemStatus.PLAYING, QueueItemStatus.DONE);
+        verify(queueItemRepository).transitionStatus(2L, STORE_ID, QueueItemStatus.WAITING, QueueItemStatus.PLAYING);
         assertThat(response).isPresent();
         assertThat(response.get().source()).isEqualTo(NowPlayingSource.QUEUE);
         assertThat(response.get().queueItemId()).isEqualTo(2L);
@@ -216,14 +219,11 @@ class QueueServiceTest {
 
     @Test
     void completeNowPlaying_대기곡이_없고_폴백트랙이_있으면_폴백으로_전환한다() {
-        QueueItem current = queueItem(1L, QueueItemStatus.PLAYING);
-        when(queueItemRepository.findFirstByStoreIdAndStatusOrderByRequestedAtAsc(STORE_ID, QueueItemStatus.PLAYING))
-                .thenReturn(Optional.of(current));
+        stubTransition(1L, QueueItemStatus.PLAYING, QueueItemStatus.DONE);
         when(fallbackTrackRepository.findByStoreId(STORE_ID)).thenReturn(List.of(fallbackTrack(1L, "fb1")));
 
-        Optional<NowPlayingResponse> response = queueService.completeNowPlaying(tableToken);
+        Optional<NowPlayingResponse> response = queueService.completeNowPlaying(tableToken, 1L);
 
-        assertThat(current.getStatus()).isEqualTo(QueueItemStatus.DONE);
         assertThat(response).isPresent();
         assertThat(response.get().source()).isEqualTo(NowPlayingSource.FALLBACK);
         assertThat(response.get().videoId()).isEqualTo("fb1");
@@ -231,24 +231,53 @@ class QueueServiceTest {
 
     @Test
     void completeNowPlaying_대기곡도_폴백트랙도_없으면_빈값을_반환한다() {
-        QueueItem current = queueItem(1L, QueueItemStatus.PLAYING);
-        when(queueItemRepository.findFirstByStoreIdAndStatusOrderByRequestedAtAsc(STORE_ID, QueueItemStatus.PLAYING))
-                .thenReturn(Optional.of(current));
+        stubTransition(1L, QueueItemStatus.PLAYING, QueueItemStatus.DONE);
 
-        Optional<NowPlayingResponse> response = queueService.completeNowPlaying(tableToken);
+        Optional<NowPlayingResponse> response = queueService.completeNowPlaying(tableToken, 1L);
 
-        assertThat(current.getStatus()).isEqualTo(QueueItemStatus.DONE);
         assertThat(response).isEmpty();
+    }
+
+    @Test
+    void completeNowPlaying_이미_처리된_곡이면_다음곡을_올리지_않고_현재_재생곡을_반환한다() {
+        // 스킵이 먼저 처리돼 곡2가 재생중인데, 곡1의 complete가 뒤늦게 도착한 상황
+        QueueItem nowPlaying = queueItem(2L, QueueItemStatus.PLAYING);
+        when(queueItemRepository.findFirstByStoreIdAndStatusOrderByRequestedAtAsc(STORE_ID, QueueItemStatus.PLAYING))
+                .thenReturn(Optional.of(nowPlaying));
+
+        Optional<NowPlayingResponse> response = queueService.completeNowPlaying(tableToken, 1L);
+
+        verify(queueItemRepository, never()).transitionStatus(
+                anyLong(), eq(STORE_ID), eq(QueueItemStatus.WAITING), eq(QueueItemStatus.PLAYING));
+        verify(fallbackTrackRepository, never()).findByStoreId(any());
+        assertThat(response).isPresent();
+        assertThat(response.get().queueItemId()).isEqualTo(2L);
+    }
+
+    @Test
+    void completeNowPlaying_승격하려던_대기곡이_그새_스킵되면_다음_대기곡을_올린다() {
+        QueueItem skippedMeanwhile = queueItem(2L, QueueItemStatus.WAITING);
+        QueueItem next = queueItem(3L, QueueItemStatus.WAITING);
+        stubTransition(1L, QueueItemStatus.PLAYING, QueueItemStatus.DONE);
+        stubTransition(3L, QueueItemStatus.WAITING, QueueItemStatus.PLAYING);
+        when(queueItemRepository.findFirstByStoreIdAndStatusOrderByRequestedAtAsc(STORE_ID, QueueItemStatus.WAITING))
+                .thenReturn(Optional.of(skippedMeanwhile), Optional.of(next));
+
+        Optional<NowPlayingResponse> response = queueService.completeNowPlaying(tableToken, 1L);
+
+        assertThat(response).isPresent();
+        assertThat(response.get().queueItemId()).isEqualTo(3L);
     }
 
     @Test
     void completeNowPlaying_폴백재생중_대기곡이_생기면_폴백을_끝내고_대기곡으로_전환한다() {
         store.startFallback(fallbackTrack(1L, "fb1"));
         QueueItem waiting = queueItem(2L, QueueItemStatus.WAITING);
+        stubTransition(2L, QueueItemStatus.WAITING, QueueItemStatus.PLAYING);
         when(queueItemRepository.findFirstByStoreIdAndStatusOrderByRequestedAtAsc(STORE_ID, QueueItemStatus.WAITING))
                 .thenReturn(Optional.of(waiting));
 
-        Optional<NowPlayingResponse> response = queueService.completeNowPlaying(tableToken);
+        Optional<NowPlayingResponse> response = queueService.completeNowPlaying(tableToken, null);
 
         assertThat(store.hasFallbackPlaying()).isFalse();
         assertThat(response).isPresent();
@@ -263,7 +292,7 @@ class QueueServiceTest {
         store.startFallback(finished);
         when(fallbackTrackRepository.findByStoreId(STORE_ID)).thenReturn(List.of(finished, other));
 
-        Optional<NowPlayingResponse> response = queueService.completeNowPlaying(tableToken);
+        Optional<NowPlayingResponse> response = queueService.completeNowPlaying(tableToken, null);
 
         assertThat(response).isPresent();
         assertThat(response.get().source()).isEqualTo(NowPlayingSource.FALLBACK);
@@ -271,16 +300,31 @@ class QueueServiceTest {
     }
 
     @Test
+    void completeNowPlaying_폴백종료가_왔는데_신청곡이_재생중이면_아무것도_바꾸지_않는다() {
+        QueueItem playing = queueItem(1L, QueueItemStatus.PLAYING);
+        when(queueItemRepository.findFirstByStoreIdAndStatusOrderByRequestedAtAsc(STORE_ID, QueueItemStatus.PLAYING))
+                .thenReturn(Optional.of(playing));
+
+        Optional<NowPlayingResponse> response = queueService.completeNowPlaying(tableToken, null);
+
+        verify(queueItemRepository, never()).transitionStatus(any(), any(), any(), any());
+        assertThat(response).isPresent();
+        assertThat(response.get().queueItemId()).isEqualTo(1L);
+    }
+
+    @Test
     void skip_재생중인_곡을_스킵하면_다음_대기곡이_재생상태로_승격한다() {
         QueueItem playing = queueItem(1L, QueueItemStatus.PLAYING);
         QueueItem next = queueItem(2L, QueueItemStatus.WAITING);
         when(queueItemRepository.findById(1L)).thenReturn(Optional.of(playing));
+        stubTransition(1L, QueueItemStatus.PLAYING, QueueItemStatus.SKIPPED);
+        stubTransition(2L, QueueItemStatus.WAITING, QueueItemStatus.PLAYING);
         when(queueItemRepository.findFirstByStoreIdAndStatusOrderByRequestedAtAsc(STORE_ID, QueueItemStatus.WAITING))
                 .thenReturn(Optional.of(next));
 
         Optional<NowPlayingResponse> response = queueService.skip(tableToken, 1L);
 
-        assertThat(playing.getStatus()).isEqualTo(QueueItemStatus.SKIPPED);
+        verify(queueItemRepository).transitionStatus(1L, STORE_ID, QueueItemStatus.PLAYING, QueueItemStatus.SKIPPED);
         assertThat(response).isPresent();
         assertThat(response.get().queueItemId()).isEqualTo(2L);
     }
@@ -289,11 +333,11 @@ class QueueServiceTest {
     void skip_재생중인_곡을_스킵했는데_대기곡이_없으면_폴백으로_전환한다() {
         QueueItem playing = queueItem(1L, QueueItemStatus.PLAYING);
         when(queueItemRepository.findById(1L)).thenReturn(Optional.of(playing));
+        stubTransition(1L, QueueItemStatus.PLAYING, QueueItemStatus.SKIPPED);
         when(fallbackTrackRepository.findByStoreId(STORE_ID)).thenReturn(List.of(fallbackTrack(1L, "fb1")));
 
         Optional<NowPlayingResponse> response = queueService.skip(tableToken, 1L);
 
-        assertThat(playing.getStatus()).isEqualTo(QueueItemStatus.SKIPPED);
         assertThat(response).isPresent();
         assertThat(response.get().source()).isEqualTo(NowPlayingSource.FALLBACK);
     }
@@ -303,18 +347,22 @@ class QueueServiceTest {
         QueueItem waiting = queueItem(2L, QueueItemStatus.WAITING);
         QueueItem playing = queueItem(1L, QueueItemStatus.PLAYING);
         when(queueItemRepository.findById(2L)).thenReturn(Optional.of(waiting));
+        stubTransition(2L, QueueItemStatus.WAITING, QueueItemStatus.SKIPPED);
         when(queueItemRepository.findFirstByStoreIdAndStatusOrderByRequestedAtAsc(STORE_ID, QueueItemStatus.PLAYING))
                 .thenReturn(Optional.of(playing));
 
         Optional<NowPlayingResponse> response = queueService.skip(tableToken, 2L);
 
-        assertThat(waiting.getStatus()).isEqualTo(QueueItemStatus.SKIPPED);
+        verify(queueItemRepository).transitionStatus(2L, STORE_ID, QueueItemStatus.WAITING, QueueItemStatus.SKIPPED);
+        verify(queueItemRepository, never()).transitionStatus(
+                anyLong(), eq(STORE_ID), eq(QueueItemStatus.WAITING), eq(QueueItemStatus.PLAYING));
         assertThat(response).isPresent();
         assertThat(response.get().queueItemId()).isEqualTo(1L);
     }
 
     @Test
     void skip_이미_종료된_큐항목이면_예외가_발생한다() {
+        // 두 조건부 UPDATE가 모두 0행 = 먼저 온 complete나 skip이 이미 처리함
         QueueItem done = queueItem(1L, QueueItemStatus.DONE);
         when(queueItemRepository.findById(1L)).thenReturn(Optional.of(done));
 

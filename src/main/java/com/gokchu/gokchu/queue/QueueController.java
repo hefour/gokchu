@@ -1,6 +1,7 @@
 package com.gokchu.gokchu.queue;
 
 import com.gokchu.gokchu.queue.dto.AddQueueItemRequest;
+import com.gokchu.gokchu.queue.dto.CompleteNowPlayingRequest;
 import com.gokchu.gokchu.queue.dto.NowPlayingResponse;
 import com.gokchu.gokchu.queue.dto.QueueItemResponse;
 import jakarta.validation.Valid;
@@ -44,8 +45,9 @@ public class QueueController {
     }
 
     @PostMapping("/now-playing/complete")
-    public ResponseEntity<NowPlayingResponse> completeNowPlaying(@PathVariable UUID tableToken) {
-        return queueService.completeNowPlaying(tableToken)
+    public ResponseEntity<NowPlayingResponse> completeNowPlaying(
+            @PathVariable UUID tableToken, @RequestBody CompleteNowPlayingRequest request) {
+        return queueService.completeNowPlaying(tableToken, request.queueItemId())
                 .map(ResponseEntity::ok)
                 .orElseGet(() -> ResponseEntity.noContent().build());
     }
