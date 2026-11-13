@@ -35,6 +35,7 @@
 | `QUEUE_ITEM_ALREADY_FINISHED` | 409 | 이미 종료된 큐 항목입니다. (`skip`을 DONE/SKIPPED 곡에 호출) |
 | `FALLBACK_TRACK_NOT_FOUND` | 404 | 존재하지 않는 폴백 트랙입니다. (다른 매장 소속인 경우도 동일하게 취급) |
 | `FALLBACK_NOT_PLAYING` | 409 | 현재 재생 중인 폴백 트랙이 없습니다. (`skip-fallback`을 신청곡 재생중이거나 아무것도 재생중이 아닐 때 호출) |
+| `FALLBACK_TRACK_ALREADY_FINISHED` | 409 | 이미 다음 곡으로 넘어간 폴백 트랙입니다. (`skip-fallback`으로 지정한 폴백이 그 사이 끝나 다른 곡이 재생중일 때) |
 | `INVALID_ADMIN_PASSWORD` | 401 | 비밀번호가 올바르지 않습니다. (`/api/admin/login`) |
 | `UNAUTHORIZED_ADMIN` | 401 | 관리자 인증이 필요합니다. (관리자 전용 엔드포인트에 유효한 토큰 없이 접근) |
 | `STORE_NOT_FOUND` | 404 | 존재하지 않는 매장입니다. |
@@ -300,15 +301,40 @@ POST /api/tables/{tableToken}/now-playing/complete
 ```
 
 TV의 YouTube IFrame Player가 `onStateChange`에서 `ENDED`를 감지했을 때 호출.
-**`queueItemId`를 받지 않는다** — 서버가 "지금 뭐가 재생중인지"(신청곡인지 폴백인지)를
-직접 알고 있으므로, TV는 그냥 "끝났다"고만 알리면 된다. 처리 순서:
+**어떤 곡이 끝났는지를 body로 알려야 한다.** `now-playing` 응답을 보고 둘 중 하나만 보낸다.
 
-1. 지금 재생중이던 게 신청곡이면 `DONE` 처리, 폴백 트랙이면 "현재 폴백" 상태를 해제
+**Request Body**
+
+```json
+{ "queueItemId": 12 }
+```
+
+```json
+{ "fallbackVideoId": "dQw4w9WgXcQ" }
+```
+
+| 필드 | 설명 |
+|---|---|
+| `queueItemId` | 끝난 게 신청곡이면(`source: QUEUE`) 그 `queueItemId` |
+| `fallbackVideoId` | 끝난 게 폴백 트랙이면(`source: FALLBACK`) 그 `videoId` |
+
+body가 없거나, 둘 다 없거나, 둘 다 있으면 `400`(`INVALID_REQUEST`, body가 아예 없으면 Spring 기본 400)이다.
+
+처리 순서:
+
+1. 끝난 곡이 **아직 지금 재생중인 곡일 때만** 넘긴다. 신청곡이면 `PLAYING`인 그 항목을 `DONE`으로,
+   폴백이면 매장의 현재 폴백이 그 `videoId`일 때 비운다. 이미 넘어간 곡이면(중복 통보, 스킵과 겹침)
+   아무것도 바꾸지 않고 지금 재생 상태를 `200`으로 돌려준다. 그래서 같은 요청이 여러 번 와도 곡은
+   하나만 넘어간다(멱등).
 2. 대기중인 신청곡(`WAITING`, 신청 시각 오름차순 최선참)이 있으면 그걸 `PLAYING`으로
    승격해서 응답
 3. 없으면 폴백 목록에서 한 곡을 골라 재생 시작 (방금 끝난 게 폴백 트랙이었다면 같은
    곡이 연달아 나오지 않도록 그 곡은 후보에서 제외하고 고름)
 4. 폴백 트랙도 없으면 `204 No Content`
+
+상태 확인과 변경은 조건부 UPDATE 한 문장(신청곡 `... WHERE id = ? AND status = 'PLAYING'`,
+폴백 `... WHERE id = ? AND current_fallback_video_id = ?`)으로 처리한다. 배경과 실험 결과는
+[concurrency-experiment.md](concurrency-experiment.md) 참고.
 
 **Response**: `GET /now-playing`과 동일한 `NowPlayingResponse` 형태, 또는 `204 No Content`.
 
@@ -330,6 +356,8 @@ POST /api/tables/{tableToken}/queue-items/{queueItemId}/skip
 `now-playing/complete`와 동일한 승격/폴백 전환 로직을 탄다. 대기중인 곡을 스킵한
 경우 현재 재생중인 것(신청곡이든 폴백이든)은 바뀌지 않는다. 큐 항목 전용 — 지금
 재생중인 게 폴백 트랙이면 대신 아래 `now-playing/skip-fallback`을 쓴다.
+같은 곡의 `now-playing/complete`와 동시에 와도 다음 곡은 한 번만 올라가고, 늦게 처리된
+쪽이 스킵이면 `QUEUE_ITEM_ALREADY_FINISHED`를 받는다.
 
 **Response**: `NowPlayingResponse` 또는 `204 No Content`(스킵 후 재생중인 게 없음).
 
@@ -350,14 +378,24 @@ POST /api/tables/{tableToken}/queue-items/{queueItemId}/skip
 POST /api/tables/{tableToken}/now-playing/skip-fallback
 ```
 
-지금 재생중인 폴백 트랙(배경음악)을 다른 폴백 트랙으로 건너뛴다. 폴백은 매장에
-동시에 최대 1개만 재생되므로 `skip`과 달리 대상 id를 받지 않는다. 방금 끝난 트랙은
-후보에서 제외하고 무작위로 고르며(트랙이 하나뿐이면 같은 트랙을 다시 재생), 등록된
-폴백 트랙 자체가 없으면 폴백 상태를 비운다. 지금 재생중인 게 신청곡이면(폴백이 아니면)
-쓸 수 없다 — 그 경우엔 `skip`을 쓴다.
+지금 재생중인 폴백 트랙(배경음악)을 건너뛴다. 대기중인 신청곡이 있으면 그걸 재생하고, 없으면 다른
+폴백 트랙으로 넘어간다. 방금 끝난 트랙은 후보에서 제외하고 무작위로 고르며(트랙이 하나뿐이면 같은
+트랙을 다시 재생), 등록된 폴백 트랙 자체가 없으면 폴백 상태를 비운다. 지금 재생중인 게 신청곡이면
+(폴백이 아니면) 쓸 수 없다 — 그 경우엔 `skip`을 쓴다.
 
-**Response**: `NowPlayingResponse`(항상 `source: FALLBACK`) 또는 `204 No Content`
-(등록된 폴백 트랙 자체가 없어진 경우).
+관리자가 누르는 사이 곡이 끝나 다른 곡으로 바뀔 수 있으므로, 화면에 보이던 폴백의 `videoId`로
+대상을 지정한다. 그 트랙이 이미 넘어갔으면 새 곡을 건너뛰지 않고 `409`를 돌려준다.
+
+**Request Body**
+
+```json
+{ "videoId": "dQw4w9WgXcQ" }
+```
+
+`videoId`가 없거나 공백이면 `400`(`INVALID_REQUEST`).
+
+**Response**: `NowPlayingResponse` 또는 `204 No Content`
+(대기곡도 없고 등록된 폴백 트랙 자체가 없어진 경우).
 
 **에러**
 
@@ -366,6 +404,7 @@ POST /api/tables/{tableToken}/now-playing/skip-fallback
 | tableToken이 존재하지 않음 | `TABLE_TOKEN_NOT_FOUND` |
 | Authorization 헤더가 없거나 토큰이 유효하지 않음/만료됨 | `UNAUTHORIZED_ADMIN` |
 | 지금 재생중인 폴백 트랙이 없음(신청곡이 재생중이거나 아무것도 재생중이 아님) | `FALLBACK_NOT_PLAYING` |
+| 지정한 폴백이 이미 끝나 다른 폴백이 재생중 | `FALLBACK_TRACK_ALREADY_FINISHED` |
 
 ---
 

@@ -66,6 +66,13 @@ public class QueueItem {
         this.status = QueueItemStatus.WAITING;
     }
 
+    /*
+     * 주의: 이미 저장된 항목의 재생/완료/스킵 전환은 이 메서드들(dirty checking)로 하지 말고
+     * QueueItemRepository#transitionStatus(조건부 UPDATE)로 한다. 읽고 판단한 뒤 쓰는 사이에
+     * 다른 요청이 끼어들 수 있기 때문이다(docs/concurrency-experiment.md 5장).
+     * play()는 방금 저장한 새 항목을 바로 재생 상태로 등록할 때 쓰고, finish()/skip()은
+     * 동시성 실험의 기준선과 비관적 락 구현이 쓴다.
+     */
     public void play() {
         this.status = QueueItemStatus.PLAYING;
     }

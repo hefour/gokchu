@@ -1,8 +1,10 @@
 package com.gokchu.gokchu.queue;
 
 import com.gokchu.gokchu.queue.dto.AddQueueItemRequest;
+import com.gokchu.gokchu.queue.dto.CompleteNowPlayingRequest;
 import com.gokchu.gokchu.queue.dto.NowPlayingResponse;
 import com.gokchu.gokchu.queue.dto.QueueItemResponse;
+import com.gokchu.gokchu.queue.dto.SkipFallbackRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -16,6 +18,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 @RestController
@@ -44,8 +47,12 @@ public class QueueController {
     }
 
     @PostMapping("/now-playing/complete")
-    public ResponseEntity<NowPlayingResponse> completeNowPlaying(@PathVariable UUID tableToken) {
-        return queueService.completeNowPlaying(tableToken)
+    public ResponseEntity<NowPlayingResponse> completeNowPlaying(
+            @PathVariable UUID tableToken, @Valid @RequestBody CompleteNowPlayingRequest request) {
+        Optional<NowPlayingResponse> next = request.queueItemId() != null
+                ? queueService.completeQueueItem(tableToken, request.queueItemId())
+                : queueService.completeFallback(tableToken, request.fallbackVideoId());
+        return next
                 .map(ResponseEntity::ok)
                 .orElseGet(() -> ResponseEntity.noContent().build());
     }
@@ -60,12 +67,13 @@ public class QueueController {
 
     /**
      * 관리자가 관리자 페이지에서 현재 재생중인 폴백 트랙(배경음악)을 수동으로 건너뛸 때 쓰는
-     * 엔드포인트. 신청곡 스킵({@link #skip})과 달리 대상을 특정할 필요가 없다 — 매장에 폴백은
-     * 항상 최대 1개만 재생중이라서.
+     * 엔드포인트. 폴백은 매장에 최대 1개만 재생되지만, 관리자가 누르는 사이 곡이 바뀔 수 있으므로
+     * 화면에 보이던 videoId로 대상을 지정한다.
      */
     @PostMapping("/now-playing/skip-fallback")
-    public ResponseEntity<NowPlayingResponse> skipFallback(@PathVariable UUID tableToken) {
-        return queueService.skipFallback(tableToken)
+    public ResponseEntity<NowPlayingResponse> skipFallback(
+            @PathVariable UUID tableToken, @Valid @RequestBody SkipFallbackRequest request) {
+        return queueService.skipFallback(tableToken, request.videoId())
                 .map(ResponseEntity::ok)
                 .orElseGet(() -> ResponseEntity.noContent().build());
     }
